@@ -1,0 +1,8 @@
+[package]
+name = "taboom-humanizer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+rand = { workspace = true }
