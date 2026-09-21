@@ -1,0 +1,46 @@
+[package]
+name = "taboomd"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "taboomd"
+path = "src/main.rs"
+
+[[bin]]
+name = "ctl-test"
+path = "src/bin/ctl_test.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+maxminddb = { workspace = true }
+rand = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+sha1 = { workspace = true }
+data-encoding = { workspace = true }
+age = { workspace = true }
+ciborium = { workspace = true }
+bytes = { workspace = true }
+taboom-proto = { path = "../taboom-proto" }
+taboom-vmm = { path = "../taboom-vmm" }
+taboom-humanizer = { path = "../taboom-humanizer" }
+nix = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs"] }
+axum = { workspace = true }
+base64 = { workspace = true }
+tokio-stream = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
