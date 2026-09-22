@@ -1,0 +1,20 @@
+[package]
+name = "taboom-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "taboom"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+taboom-proto = { path = "../taboom-proto" }
+rand = { workspace = true }
