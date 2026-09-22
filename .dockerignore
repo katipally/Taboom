@@ -1,0 +1,51 @@
+target/
+**/target/
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.venv/
+**/.coverage
+**/.coverage.*
+**/htmlcov/
+
+# Local Taboom runtime state (when TABOOM_HOME points into the checkout)
+.taboom/
+/personas/
+/profiles/
+/images/
+/recordings/
+/audit/
+/logs/
+/vault/
+/run/
+
+# Local credentials and VM/runtime artifacts
+.env
+.env.*
+*.qcow2
+*.overlay
+*.age
+*.pid
+*.sock
+*.mmdb
+*.rs.bk
+*.pdb
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Build context only needs application sources and assets.
+.git/
+docs/
+lab/
+skills/
+source-codes/

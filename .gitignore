@@ -1,0 +1,53 @@
+# Rust build output
+/target/
+**/target/
+*.rs.bk
+*.pdb
+
+# Python environments, caches, and build metadata
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local credentials and configuration
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Taboom runtime data (also protect runs with TABOOM_HOME set to the repo)
+/.taboom/
+/personas/
+/profiles/
+/images/
+/recordings/
+/audit/
+/logs/
+/vault/
+/run/
+*.qcow2
+*.overlay
+*.age
+*.pid
+*.sock
+*.mmdb
+
+# Optional research snapshots; not part of the application or Docker build
+/source-codes/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
