@@ -1,0 +1,131 @@
+#cloud-config
+hostname: taboom-vm
+
+users:
+  - name: taboom
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    groups: video, input, seat
+    lock_passwd: false
+    plain_text_passwd: taboom
+
+ssh_pwauth: true
+
+package_update: true
+packages:
+  - openssh-server
+  - sway
+  - seatd
+  - wayvnc
+  - fonts-liberation
+  - fonts-noto
+  - curl
+  - jq
+  - wget
+  - gnupg
+  - unattended-upgrades
+  - tun2socks
+  - iptables
+
+write_files:
+  - path: /etc/sway/config.d/taboom.conf
+    content: |
+      output HEADLESS-1 resolution 1280x720
+      output * bg #1a1a2e solid_color
+      seat seat0 xcursor_theme default 24
+      input type:pointer {
+        accel_profile flat
+        pointer_accel 0
+      }
+      exec google-chrome-stable --ozone-platform=wayland --no-first-run --no-default-browser-check --restore-last-session --user-data-dir=/home/taboom/.config/google-chrome
+
+  - path: /etc/systemd/system/taboom-guest.service
+    content: |
+      [Unit]
+      Description=Taboom Guest Agent
+      After=network.target
+
+      [Service]
+      Type=notify
+      ExecStart=/usr/local/bin/taboom-guest
+      Restart=always
+      RestartSec=2
+      WatchdogSec=10
+      User=root
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/sway.service
+    content: |
+      [Unit]
+      Description=Sway Compositor
+      After=seatd.service
+      Requires=seatd.service
+
+      [Service]
+      Type=simple
+      User=taboom
+      Environment=WLR_BACKENDS=headless
+      Environment=WLR_LIBINPUT_NO_DEVICES=1
+      Environment=XDG_RUNTIME_DIR=/run/user/1000
+      ExecStartPre=/bin/mkdir -p /run/user/1000
+      ExecStartPre=/bin/chown taboom:taboom /run/user/1000
+      ExecStart=/usr/bin/sway
+      Restart=always
+      RestartSec=2
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/wayvnc.service
+    content: |
+      [Unit]
+      Description=WayVNC Server
+      After=sway.service
+      Requires=sway.service
+
+      [Service]
+      Type=simple
+      User=taboom
+      Environment=WAYLAND_DISPLAY=wayland-1
+      Environment=XDG_RUNTIME_DIR=/run/user/1000
+      ExecStart=/usr/bin/wayvnc 0.0.0.0 5900
+      Restart=always
+      RestartSec=2
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/opt/chrome/policies/managed/taboom-policy.json
+    content: |
+      {
+        "WebRtcIPHandlingPolicy": "disable_non_proxied_udp",
+        "HideFirstRunUI": true,
+        "DefaultBrowserSettingEnabled": false,
+        "ShowFullUrlsInAddressBar": true,
+        "AutofillCreditCardEnabled": false,
+        "PasswordManagerEnabled": false,
+        "MetricsReportingEnabled": false,
+        "SpellcheckEnabled": true,
+        "TranslateEnabled": false,
+        "BackgroundModeEnabled": false,
+        "BrowserSignin": 0,
+        "SyncDisabled": true
+      }
+
+  - path: /etc/apt/apt.conf.d/51taboom-unattended
+    content: |
+      Unattended-Upgrade::Allowed-Origins {
+          "${distro_id}:${distro_codename}-security";
+          "Google LLC:stable";
+      };
+      Unattended-Upgrade::Automatic-Reboot "false";
+
+runcmd:
+  - wget -qO- https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
+  - echo 'deb [arch=arm64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main' > /etc/apt/sources.list.d/google-chrome.list
+  - apt-get update -qq
+  - apt-get install -y -qq google-chrome-stable
+  - systemctl enable seatd sway wayvnc taboom-guest
+  - systemctl start seatd sway wayvnc taboom-guest

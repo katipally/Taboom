@@ -1,0 +1,19 @@
+[Unit]
+Description=Sway Compositor
+After=seatd.service
+Requires=seatd.service
+
+[Service]
+Type=simple
+User=taboom
+Environment=WLR_BACKENDS=headless
+Environment=WLR_LIBINPUT_NO_DEVICES=1
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStartPre=/bin/mkdir -p /run/user/1000
+ExecStartPre=/bin/chown taboom:taboom /run/user/1000
+ExecStart=/usr/bin/sway
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
