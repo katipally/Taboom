@@ -1,0 +1,15 @@
+{
+  "WebRtcIPHandlingPolicy": "disable_non_proxied_udp",
+  "HideFirstRunUI": true,
+  "DefaultBrowserSettingEnabled": false,
+  "ShowFullUrlsInAddressBar": true,
+  "AutofillCreditCardEnabled": false,
+  "PasswordManagerEnabled": false,
+  "MetricsReportingEnabled": false,
+  "SpellcheckEnabled": true,
+  "TranslateEnabled": false,
+  "BackgroundModeEnabled": false,
+  "PromotionsEnabled": false,
+  "BrowserSignin": 0,
+  "SyncDisabled": true
+}

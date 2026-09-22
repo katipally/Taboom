@@ -1,0 +1,44 @@
+services:
+  taboom:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    # tini as PID 1 reaps exited processes; without it a closed Chrome lingers as zombies
+    # that hold the profile lock, and the browser can never be reopened
+    init: true
+    ports:
+      # set TABOOM_PUBLISH=0.0.0.0 to reach it from other machines (then also set tokens)
+      - "${TABOOM_PUBLISH:-127.0.0.1}:${TABOOM_MCP_PORT:-3456}:3456"
+      # live view in the browser (noVNC); it has no password, so keep it private
+      - "${TABOOM_PUBLISH:-127.0.0.1}:${TABOOM_VIEW_PORT:-6080}:6080"
+    environment:
+      - TABOOM_LOCAL=1
+      - TABOOM_HOME=/home/taboom/.taboom
+      - TABOOM_MCP_BIND=0.0.0.0
+      # optional bearer auth, one lease holder per name: agent-a=tok1,agent-b=tok2
+      - TABOOM_MCP_TOKENS=${TABOOM_MCP_TOKENS:-}
+      # base of shareable recording links; change it when others reach this box by another name
+      - TABOOM_PUBLIC_URL=${TABOOM_PUBLIC_URL:-http://localhost:${TABOOM_MCP_PORT:-3456}}
+      # optional: log every mouse/keyboard event to this file (e.g. for the eval lab)
+      - VINPUT_TRACE=${VINPUT_TRACE:-}
+      - TABOOM_VIEW_URL=http://localhost:${TABOOM_VIEW_PORT:-6080}/vnc.html?autoconnect=1&resize=scale&view_only=1
+    # Chrome crashes tabs with Docker's default 64 MB /dev/shm
+    shm_size: 1gb
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/3456"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 3
+    # sway headless needs these capabilities
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+    # persist browser profile + persona config across restarts
+    volumes:
+      - taboom-data:/home/taboom/.taboom
+
+volumes:
+  taboom-data:

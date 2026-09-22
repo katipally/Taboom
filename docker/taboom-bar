@@ -1,0 +1,22 @@
+#!/bin/bash
+# swaybar status (i3bar protocol): clickable launchers, so a closed browser is one click away.
+echo '{"version":1,"click_events":true}'
+echo '['
+# a backgrounded loop gets /dev/null as stdin unless it is redirected explicitly
+exec 3<&0
+while read -r event; do
+    case "$event" in
+        *'"browser"'*)  taboom-browser >/dev/null 2>&1 & ;;
+        *'"terminal"'*) foot >/dev/null 2>&1 & ;;
+        *'"apps"'*)     fuzzel >/dev/null 2>&1 & ;;
+    esac
+done <&3 &
+button() {
+    printf '{"name":"%s","full_text":"  %s  ","background":"#2d2d4a","border":"#4a4a6a","separator":false,"separator_block_width":8}' "$1" "$2"
+}
+while :; do
+    printf '[%s,%s,%s,{"name":"clock","full_text":"%s"}],\n' \
+        "$(button browser Browser)" "$(button terminal Terminal)" "$(button apps Apps)" \
+        "$(date +'%Y-%m-%d %H:%M:%S')"
+    sleep 1
+done

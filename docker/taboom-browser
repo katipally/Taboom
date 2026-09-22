@@ -1,0 +1,25 @@
+#!/bin/bash
+# Go to the browser: focus an open window, or start Chrome on the active persona's profile.
+# taboomd writes the active persona to run/active-persona when a persona is acquired.
+if swaymsg -q '[app_id="^google-chrome"] focus' 2>/dev/null; then
+    exit 0
+fi
+home="${TABOOM_HOME:-$HOME/.taboom}"
+persona=$(cat "$home/run/active-persona" 2>/dev/null)
+[[ "$persona" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || persona=default
+profile="$home/profiles/$persona"
+mkdir -p "$profile/Default" "$home/logs"
+# a live Chrome must keep its locks and state; only a dead one leaves stale ones behind
+if ! pgrep -x chrome >/dev/null; then
+    rm -f "$profile"/Singleton{Lock,Socket,Cookie}
+    # a killed container leaves exit_type Crashed, which brings up a restore bubble
+    sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/; s/"exited_cleanly":false/"exited_cleanly":true/' \
+        "$profile/Default/Preferences" 2>/dev/null
+fi
+if [ ! -e "$profile/First Run" ]; then
+    touch "$profile/First Run"
+    [ -e "$profile/Default/Preferences" ] ||
+        echo '{"session":{"restore_on_startup":1}}' >"$profile/Default/Preferences"
+fi
+exec google-chrome-stable --ozone-platform=wayland --user-data-dir="$profile" "$@" \
+    >>"$home/logs/chrome.log" 2>&1
