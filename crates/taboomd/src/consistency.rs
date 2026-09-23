@@ -1,202 +1,112 @@
-use crate::hardware::device_memory_bucket;
-use crate::persona::PersonaConfig;
-use serde::{Deserialize, Serialize};
+pub use taboom_core::consistency::*;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConsistencyReport {
-    pub checks: Vec<ConsistencyCheck>,
-}
+use crate::hardware::{device_memory_gb, mem_total_mb, visible_cpus};
+use crate::persona::{Engine, Persona};
+use serde_json::Value;
+use std::collections::HashMap;
+use std::path::Path;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConsistencyCheck {
-    pub name: String,
-    pub passed: bool,
-    pub detail: String,
-}
-
-impl ConsistencyReport {
-    pub fn all_passed(&self) -> bool {
-        self.checks.iter().all(|c| c.passed)
-    }
-}
-
-pub fn check_persona(persona: &PersonaConfig) -> ConsistencyReport {
-    let mut checks = Vec::new();
-
-    if let Some(ref hw) = persona.hardware {
-        checks.push(check_screen_dimensions(hw.screen_width, hw.screen_height));
-        checks.push(check_dpr(hw.dpr));
-        checks.push(check_device_memory(persona.ram_mb, hw.dpr));
-        checks.push(check_worker_cores(persona.cpus));
-    }
-
-    if let Some(ref id) = persona.identity {
-        checks.push(check_languages_accept_language(
-            &id.languages,
-            &persona.browser.accept_languages,
-        ));
-    }
-
-    checks.push(check_timezone_nonempty(&persona.timezone));
-
-    ConsistencyReport { checks }
-}
-
-pub fn check_pair_distinct(a: &PersonaConfig, b: &PersonaConfig) -> ConsistencyCheck {
-    let mut diffs = 0u32;
-
-    if a.cpus != b.cpus {
-        diffs += 1;
-    }
-    if a.ram_mb != b.ram_mb {
-        diffs += 1;
-    }
-
-    let (a_w, a_h, a_dpr) = a
-        .hardware
-        .as_ref()
-        .map(|h| (h.screen_width, h.screen_height, h.dpr))
-        .unwrap_or((0, 0, 0.0));
-    let (b_w, b_h, b_dpr) = b
-        .hardware
-        .as_ref()
-        .map(|h| (h.screen_width, h.screen_height, h.dpr))
-        .unwrap_or((0, 0, 0.0));
-
-    if a_w != b_w || a_h != b_h {
-        diffs += 1;
-    }
-    if (a_dpr - b_dpr).abs() > 0.01 {
-        diffs += 1;
-    }
-
-    let passed = diffs >= 1;
-    ConsistencyCheck {
-        name: format!("pair-distinct({}, {})", a.name, b.name),
-        passed,
-        detail: if passed {
-            format!("{diffs} hardware difference(s)")
-        } else {
-            "identical hardware fingerprints on same host".into()
+/// Observe what the running processes actually got: Chrome's own environment and flags, the
+/// layout vinput built its keymap from, and sway's output. A value is None when its process is
+/// not running, which the check reports as a mismatch rather than trusting the boot env file.
+pub fn observe(screen: Option<(u32, u32, f64)>, persona: &Persona) -> Applied {
+    let profile = std::env::var_os("TABOOM_PROFILE");
+    let browser = profile.as_deref().map(Path::new).and_then(browser_process);
+    let browser_env = |key: &str| browser.as_ref().and_then(|b| b.env.get(key).cloned());
+    let fortress_flag = |name: &str| -> Option<u64> {
+        let prefix = format!("--{name}=");
+        browser.as_ref()?.args.iter().find_map(|a| a.strip_prefix(&prefix)?.parse().ok())
+    };
+    let fortress = persona.browser.engine == Engine::Fortress;
+    Applied {
+        timezone: browser_env("TZ"),
+        locale: browser_env("LANG"),
+        language_environment: browser_env("LANGUAGE"),
+        chrome_accept_languages: observe_chrome_accept_languages(profile.as_deref().map(Path::new)),
+        keyboard_layout: find_process(|args| args.first().is_some_and(|a| a.ends_with("vinput")))
+            .and_then(|p| p.env.get("XKB_DEFAULT_LAYOUT").cloned()),
+        screen,
+        hardware_concurrency: match fortress {
+            true => fortress_flag("uxr-hw-concurrency").map_or(0, |n| n as u32),
+            false => visible_cpus(),
+        },
+        device_memory: match fortress {
+            true => fortress_flag("uxr-device-memory").map(|gb| gb as f64),
+            false => mem_total_mb().map(device_memory_gb),
         },
     }
 }
 
-fn check_screen_dimensions(w: u32, h: u32) -> ConsistencyCheck {
-    let passed = w >= 800 && h >= 600 && w <= 7680 && h <= 4320;
-    ConsistencyCheck {
-        name: "screen-dimensions".into(),
-        passed,
-        detail: format!("{w}x{h}"),
-    }
+struct Process {
+    args: Vec<String>,
+    env: HashMap<String, String>,
 }
 
-fn check_dpr(dpr: f64) -> ConsistencyCheck {
-    let passed = (1.0..=3.0).contains(&dpr);
-    ConsistencyCheck {
-        name: "dpr-range".into(),
-        passed,
-        detail: format!("{dpr}"),
-    }
+/// The browser's main process (renderers and helpers carry `--type=`), found by its profile.
+fn browser_process(profile: &Path) -> Option<Process> {
+    let flag = format!("--user-data-dir={}", profile.display());
+    find_process(|args| args.contains(&flag) && !args.iter().any(|a| a.starts_with("--type=")))
 }
 
-fn check_device_memory(ram_mb: u32, _dpr: f64) -> ConsistencyCheck {
-    let bucket = device_memory_bucket(ram_mb);
-    let passed = bucket >= 2.0;
-    ConsistencyCheck {
-        name: "device-memory".into(),
-        passed,
-        detail: format!("ram={ram_mb}MB -> deviceMemory={bucket}"),
-    }
+/// First process whose argv matches. O(processes); only persona_status and startup call it.
+fn find_process(matches: impl Fn(&[String]) -> bool) -> Option<Process> {
+    let nul_split = |bytes: Vec<u8>| -> Vec<String> {
+        bytes.split(|b| *b == 0).filter(|s| !s.is_empty()).map(|s| String::from_utf8_lossy(s).into_owned()).collect()
+    };
+    std::fs::read_dir("/proc").ok()?.flatten().find_map(|entry| {
+        let args = nul_split(std::fs::read(entry.path().join("cmdline")).ok()?);
+        if !matches(&args) {
+            return None;
+        }
+        let env = nul_split(std::fs::read(entry.path().join("environ")).ok()?)
+            .into_iter()
+            .filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+            .collect();
+        Some(Process { args, env })
+    })
 }
 
-fn check_worker_cores(cpus: u32) -> ConsistencyCheck {
-    let passed = (1..=128).contains(&cpus);
-    ConsistencyCheck {
-        name: "worker-cores".into(),
-        passed,
-        detail: format!("hardwareConcurrency={cpus}"),
-    }
+/// True once the browser for this container's profile is running.
+pub fn browser_running() -> bool {
+    std::env::var_os("TABOOM_PROFILE").is_some_and(|p| browser_process(Path::new(&p)).is_some())
 }
 
-fn check_languages_accept_language(languages: &[String], accept_lang: &str) -> ConsistencyCheck {
-    if languages.is_empty() {
-        return ConsistencyCheck {
-            name: "languages-match".into(),
-            passed: true,
-            detail: "no languages configured, skipping".into(),
-        };
-    }
-    let first = &languages[0];
-    let passed = accept_lang.starts_with(first.as_str());
-    ConsistencyCheck {
-        name: "languages-match".into(),
-        passed,
-        detail: format!("primary={first}, Accept-Language starts with '{}'", accept_lang.split(',').next().unwrap_or("")),
-    }
-}
-
-fn check_timezone_nonempty(tz: &str) -> ConsistencyCheck {
-    let passed = !tz.is_empty() && tz.contains('/');
-    ConsistencyCheck {
-        name: "timezone-format".into(),
-        passed,
-        detail: tz.to_string(),
-    }
+/// Read the value Chrome will load from its active profile. Missing paths, malformed JSON, and
+/// absent or mistyped keys all return None so consistency checking reports them as mismatches.
+fn observe_chrome_accept_languages(profile: Option<&Path>) -> Option<String> {
+    let profile = profile?;
+    let path = profile.join("Default").join("Preferences");
+    let bytes = std::fs::read(path).ok()?;
+    let preferences: Value = serde_json::from_slice(&bytes).ok()?;
+    preferences.get("intl")?.get("accept_languages")?.as_str().map(str::to_owned)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::{BrowserSettings, HardwareConfig, IdentityConfig};
+    use serde_json::json;
 
-    fn test_persona(name: &str, cpus: u32, ram: u32, w: u32, h: u32, dpr: f64) -> PersonaConfig {
-        PersonaConfig {
-            name: name.into(),
-            cpus,
-            ram_mb: ram,
-            timezone: "America/New_York".into(),
-            route: crate::persona::RouteConfig::Direct,
-            browser: BrowserSettings::default(),
-            hardware: Some(HardwareConfig {
-                screen_width: w,
-                screen_height: h,
-                dpr,
-            }),
-            identity: Some(IdentityConfig {
-                keyboard_layout: "us".into(),
-                locale: "en_US.UTF-8".into(),
-                languages: vec!["en-US".into(), "en".into()],
-                fonts_packages: vec![],
-            }),
-            humanizer_seed: None,
-            humanizer_style: None,
-        }
+    #[test]
+    fn observes_chrome_accept_languages_from_active_profile_preferences() {
+        let profile = tempfile::tempdir().unwrap();
+        let preferences = profile.path().join("Default/Preferences");
+        std::fs::create_dir_all(preferences.parent().unwrap()).unwrap();
+        std::fs::write(&preferences, json!({"intl":{"accept_languages":"de-DE,de,en"}}).to_string()).unwrap();
+
+        assert_eq!(
+            observe_chrome_accept_languages(Some(profile.path())).as_deref(),
+            Some("de-DE,de,en")
+        );
     }
 
     #[test]
-    fn consistent_persona_passes() {
-        let p = test_persona("alice", 4, 8192, 1920, 1080, 1.0);
-        let report = check_persona(&p);
-        assert!(report.all_passed(), "failed: {:?}", report.checks);
-    }
-
-    #[test]
-    fn bad_dpr_fails() {
-        let p = test_persona("bob", 4, 8192, 1920, 1080, 5.0);
-        let report = check_persona(&p);
-        assert!(!report.all_passed());
-    }
-
-    #[test]
-    fn pair_must_differ() {
-        let a = test_persona("a", 4, 8192, 1920, 1080, 1.0);
-        let b = test_persona("b", 4, 8192, 1920, 1080, 1.0);
-        let check = check_pair_distinct(&a, &b);
-        assert!(!check.passed);
-
-        let c = test_persona("c", 8, 16384, 2560, 1440, 1.25);
-        let check2 = check_pair_distinct(&a, &c);
-        assert!(check2.passed);
+    fn missing_or_invalid_chrome_preferences_have_no_applied_value() {
+        let profile = tempfile::tempdir().unwrap();
+        assert_eq!(observe_chrome_accept_languages(Some(profile.path())), None);
+        let preferences = profile.path().join("Default/Preferences");
+        std::fs::create_dir_all(preferences.parent().unwrap()).unwrap();
+        std::fs::write(&preferences, "not json").unwrap();
+        assert_eq!(observe_chrome_accept_languages(Some(profile.path())), None);
+        assert_eq!(observe_chrome_accept_languages(None), None);
     }
 }
