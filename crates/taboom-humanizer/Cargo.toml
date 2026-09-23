@@ -6,3 +6,9 @@ edition.workspace = true
 [dependencies]
 serde = { workspace = true }
 rand = { workspace = true }
+serde_json = { workspace = true }
+taboom-core = { path = "../taboom-core" }
+
+[[example]]
+name = "trace_export"
+path = "examples/trace_export.rs"

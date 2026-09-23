@@ -2,14 +2,7 @@ use rand::distributions::{Distribution, Uniform};
 use rand::rngs::StdRng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum SpeedClass {
-    Slow,
-    Medium,
-    Fast,
-}
+pub use taboom_core::persona::SpeedClass;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HumanizerStyle {
