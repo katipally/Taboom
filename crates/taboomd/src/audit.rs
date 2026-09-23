@@ -83,20 +83,4 @@ impl AuditLog {
         Ok(())
     }
 
-    pub fn log_persona(&self, event: &str, persona: &str, detail: &str) -> Result<()> {
-        let entry = json!({
-            "ts": Utc::now().to_rfc3339(),
-            "event": event,
-            "persona": persona,
-            "detail": detail,
-        });
-
-        let mut line = serde_json::to_string(&entry)?;
-        line.push('\n');
-
-        let mut f = self.file.lock().unwrap();
-        f.write_all(line.as_bytes())?;
-        f.flush()?;
-        Ok(())
-    }
 }

@@ -13,7 +13,6 @@ services:
       # live view in the browser (noVNC); it has no password, so keep it private
       - "${TABOOM_PUBLISH:-127.0.0.1}:${TABOOM_VIEW_PORT:-6080}:6080"
     environment:
-      - TABOOM_LOCAL=1
       - TABOOM_HOME=/home/taboom/.taboom
       - TABOOM_MCP_BIND=0.0.0.0
       # optional bearer auth, one lease holder per name: agent-a=tok1,agent-b=tok2

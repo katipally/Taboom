@@ -27,16 +27,12 @@ htmlcov/
 /.taboom/
 /personas/
 /profiles/
-/images/
 /recordings/
 /audit/
 /logs/
 /vault/
 /run/
-*.qcow2
-*.overlay
 *.age
-*.pid
 *.sock
 *.mmdb
 

@@ -47,11 +47,8 @@ is injected into pages, and no tool launches or controls apps behind the scenes.
 > **Acceptable use:** personal and research agents acting for the person who runs them. Not for
 > account farming, mass sign-ups, or dodging rate limits at scale.
 
-**Runtime status:** Docker Compose is the supported end-to-end runtime. The QEMU VM crates and
-the cloud-init/systemd provisioning files under `image/` are incomplete development work:
-`taboom image build` is currently a placeholder, and the host-to-guest control path is not wired
-end to end. Use the Docker quick start below to run Taboom; the VM architecture in `PLAN.md`
-describes the intended design.
+**Runtime:** Docker Compose is the only supported runtime. One container runs one shared Linux
+desktop and browser; personas use separate Chrome profiles within that desktop.
 
 ---
 
@@ -537,7 +534,7 @@ default one is created on first start. Add one with the `persona_create` tool (n
    └─> ~/.taboom/personas/work.toml        unset fields use Taboom's built-in defaults
 ```
 
-In Docker mode, acquiring a persona switches Chrome to that persona's profile and selects an
+Acquiring a persona switches Chrome to that persona's profile and selects an
 input style based on its name. Other persona settings—including timezone, locale, keyboard layout,
 languages, screen, CPU/RAM, hardware, humanizer style, and route—are saved in the config but are not
 applied to the container runtime yet.
@@ -655,7 +652,7 @@ docker compose exec taboom grim /tmp/s.png && docker compose cp taboom:/tmp/s.pn
                                        acquire again. Chrome log: ~/.taboom/logs/chrome.log
  "take a new screenshot"               the screen changed or frame_id is old. Screenshot,
                                        then use the new coordinates
- "<secret> placeholders need the       the vault is not wired into Docker mode yet. Type
+ "<secret> placeholders need the       vault-based secret typing is not wired into the desktop yet. Type
   vault"                               the value yourself through the live view
  Apple Silicon build is slow           expected on first build; later builds are cached
 ```
@@ -680,7 +677,7 @@ cargo install --path crates/taboom-cli
 
 After changing Rust code, rebuild the container: `docker compose up -d --build`.
 
-The full design, invariants, and build plan live in [`PLAN.md`](PLAN.md).
+The Docker-only architecture and development notes live in [`PLAN.md`](PLAN.md).
 
 ---
 
@@ -691,16 +688,12 @@ The full design, invariants, and build plan live in [`PLAN.md`](PLAN.md).
    taboomd/            daemon: MCP server (src/mcp.rs), tools (src/handler.rs),
                        recordings (src/recording.rs), leases, vault, audit
    taboom-cli/         `taboom` binary: connect, stdio bridge, persona, vault, doctor
-   taboom-proto/       host <-> guest protocol types
-   taboom-vmm/         QEMU supervisor (incomplete VM path)
-   taboom-guest/       guest service (incomplete VM path)
    taboom-humanizer/   human-like mouse and typing models
  docker/               Dockerfile, entrypoint, sway config, vinput (virtual mouse + keyboard),
                        taboom-browser (starts Chrome on the active persona's profile)
  docker-compose.yml    the one-command stack
- image/                cloud-init/systemd inputs for the incomplete QEMU path;
-                       chrome-policy.json is also Docker's managed Chrome policy
+ image/                Chrome policy installed in the container
  skills/               agent playbook (SKILL.md) and per-site notes
  lab/                  Python eval lab: recorder, detector, model fitting
- PLAN.md               architecture and roadmap
+ PLAN.md               Docker-only architecture and development notes
 ```

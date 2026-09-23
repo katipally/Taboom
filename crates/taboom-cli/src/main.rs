@@ -16,22 +16,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Up {
-        #[arg(help = "Persona name")]
-        persona: String,
-    },
-    Down {
-        #[arg(help = "Persona name")]
-        persona: String,
-    },
     Doctor,
     Persona {
         #[command(subcommand)]
         action: PersonaAction,
-    },
-    Image {
-        #[command(subcommand)]
-        action: ImageAction,
     },
     Vault {
         #[command(subcommand)]
@@ -97,18 +85,6 @@ enum PersonaAction {
 }
 
 #[derive(Subcommand)]
-enum ImageAction {
-    Build,
-    Pull {
-        #[arg(long)]
-        url: Option<String>,
-    },
-    Verify,
-    List,
-    Gc,
-}
-
-#[derive(Subcommand)]
 enum VaultAction {
     Init,
     Unlock,
@@ -164,9 +140,7 @@ async fn main() -> Result<()> {
     let home = taboom_home(cli.home.as_deref());
 
     match cli.command {
-        Commands::Up { persona } => cmd::up(&home, &persona).await,
-        Commands::Down { persona } => cmd::down(&home, &persona).await,
-        Commands::Doctor => doctor::run(&home).await,
+        Commands::Doctor => doctor::run().await,
         Commands::Persona { action } => match action {
             PersonaAction::Create { name, cpus, ram } => {
                 cmd::persona_create(&home, &name, cpus, ram).await
@@ -174,13 +148,6 @@ async fn main() -> Result<()> {
             PersonaAction::List => cmd::persona_list(&home).await,
             PersonaAction::Show { name } => cmd::persona_show(&home, &name).await,
             PersonaAction::Delete { name } => cmd::persona_delete(&home, &name).await,
-        },
-        Commands::Image { action } => match action {
-            ImageAction::Build => cmd::image_build(&home).await,
-            ImageAction::Pull { url } => cmd::image_pull(&home, url.as_deref()).await,
-            ImageAction::Verify => cmd::image_verify(&home).await,
-            ImageAction::List => cmd::image_list(&home).await,
-            ImageAction::Gc => cmd::image_gc(&home).await,
         },
         Commands::Vault { action } => match action {
             VaultAction::Init => cmd::vault_init(&home).await,

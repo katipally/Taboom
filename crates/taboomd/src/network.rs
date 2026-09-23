@@ -2,7 +2,7 @@ use maxminddb::Reader;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::path::Path;
-use taboom_proto::{Route, RouteState};
+use crate::persona::RouteConfig;
 use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,17 +111,17 @@ impl RouteChecker {
 
     pub fn validate_at_creation(
         &self,
-        route: &Route,
+        route: &RouteConfig,
         _timezone: &str,
     ) -> Vec<String> {
         let mut warnings = Vec::new();
 
         match route {
-            Route::Direct => {
+            RouteConfig::Direct => {
                 warn!("persona using direct route; datacenter detection possible in cloud");
                 warnings.push("direct route: datacenter IP detection possible if running in cloud".into());
             }
-            Route::Proxy { address, port, .. } => {
+            RouteConfig::Proxy { address, port, .. } => {
                 if let Ok(ip) = address.parse::<IpAddr>() {
                     let geo = self.geo.lookup(ip);
                     if check_datacenter_asn(geo.asn) {
@@ -157,7 +157,6 @@ impl RouteChecker {
         let is_datacenter = check_datacenter_asn(geo.asn);
 
         RouteHealthResult {
-            state: RouteState::Up,
             geo,
             tz_mismatch,
             is_datacenter,
@@ -166,7 +165,6 @@ impl RouteChecker {
 }
 
 pub struct RouteHealthResult {
-    pub state: RouteState,
     pub geo: GeoInfo,
     pub tz_mismatch: bool,
     pub is_datacenter: bool,

@@ -12,7 +12,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use taboom_proto::Message;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,8 +61,6 @@ impl ToolResult {
 
 type Res = anyhow::Result<ToolResult>;
 
-pub type ChannelSender = tokio::sync::mpsc::Sender<Message>;
-
 /// Longest edge of screenshots by default. Larger images get downscaled by the model's API,
 /// which silently skews the coordinates it sends back.
 const DEFAULT_MAX_EDGE: u32 = 1280;
@@ -90,8 +87,7 @@ pub struct ToolHandler {
     lease_mgr: Mutex<LeaseManager>,
     handoff_mgr: Mutex<HandoffManager>,
     personas: Arc<PersonaRegistry>,
-    channel: Mutex<Option<ChannelSender>>,
-    local: Option<LocalExecutor>,
+    local: LocalExecutor,
     recorder: Arc<Recorder>,
     views: Mutex<HashMap<String, View>>,
     videos: Mutex<HashMap<String, (std::process::Child, PathBuf)>>,
@@ -106,13 +102,8 @@ impl ToolHandler {
         personas: Arc<PersonaRegistry>,
         recorder: Arc<Recorder>,
     ) -> Self {
-        let local = if std::env::var("TABOOM_LOCAL").is_ok() {
-            let local = LocalExecutor::new();
-            local.start_idle();
-            Some(local)
-        } else {
-            None
-        };
+        let local = LocalExecutor::new();
+        local.start_idle();
         let files_dir = std::env::var_os("TABOOM_FILES_DIR")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Downloads")))
@@ -125,7 +116,6 @@ impl ToolHandler {
             lease_mgr: Mutex::new(lease_mgr),
             handoff_mgr: Mutex::new(handoff_mgr),
             personas,
-            channel: Mutex::new(None),
             local,
             recorder,
             views: Mutex::new(HashMap::new()),
@@ -137,16 +127,6 @@ impl ToolHandler {
 
     pub fn recorder(&self) -> &Recorder {
         &self.recorder
-    }
-
-    pub fn set_channel(&self, tx: ChannelSender) {
-        *self.channel.lock().unwrap() = Some(tx);
-    }
-
-    fn try_dispatch(&self, msg: &Message) {
-        if let Some(tx) = self.channel.lock().unwrap().as_ref() {
-            let _ = tx.try_send(msg.clone());
-        }
     }
 
     /// Runs one tool call and records it in the caller's session.
@@ -167,14 +147,12 @@ impl ToolHandler {
                 Ok(rec) => self.start_video(client_id, &rec),
                 Err(e) => tracing::warn!("recording not started: {e}"),
             }
-            if let Some(local) = &self.local {
-                local.set_persona(id);
-                local.set_idle(true);
-            }
+            self.local.set_persona(id);
+            self.local.set_idle(true);
         }
 
-        let frame = match (&call, &self.local, result.is_error) {
-            (ToolCall::Screenshot { .. } | ToolCall::Zoom { .. }, _, false) => result
+        let frame = match (&call, result.is_error) {
+            (ToolCall::Screenshot { .. } | ToolCall::Zoom { .. }, false) => result
                 .images
                 .first()
                 .and_then(|i| base64::engine::general_purpose::STANDARD.decode(&i.base64).ok())
@@ -185,7 +163,6 @@ impl ToolHandler {
                 | ToolCall::OpenUrl { .. } | ToolCall::Wait { .. } | ToolCall::MouseDown { .. }
                 | ToolCall::MouseUp { .. } | ToolCall::KeyDown { .. } | ToolCall::KeyUp { .. }
                 | ToolCall::HoldKey { .. },
-                Some(_),
                 _,
             ) => recording::Frame::Pending("png"),
             _ => recording::Frame::None,
@@ -198,7 +175,8 @@ impl ToolHandler {
             started.elapsed().as_millis() as u64,
             frame,
         );
-        if let (Some(path), Some(local)) = (pending, self.local.clone()) {
+        if let Some(path) = pending {
+            let local = self.local.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(RECORD_FRAME_DELAY);
                 match local.capture(None, 0.5, "png") {
@@ -211,10 +189,8 @@ impl ToolHandler {
         }
 
         if let (ToolCall::PersonaRelease, false) = (&call, result.is_error) {
-            if let Some(local) = &self.local {
-                local.set_idle(false);
-                let _ = local.release_all();
-            }
+            self.local.set_idle(false);
+            let _ = self.local.release_all();
             self.stop_video(client_id);
             self.recorder.stop(client_id);
             self.views.lock().unwrap().remove(client_id);
@@ -222,9 +198,9 @@ impl ToolHandler {
         result
     }
 
-    /// Screen video for the session, next to its events. Local mode only.
+    /// Screen video for the session, next to its events.
     fn start_video(&self, client_id: &str, rec: &str) {
-        let (Some(local), Ok(dir)) = (&self.local, self.recorder.session_path(rec)) else {
+        let Ok(dir) = self.recorder.session_path(rec) else {
             return;
         };
         let mut videos = self.videos.lock().unwrap();
@@ -232,7 +208,7 @@ impl ToolHandler {
             return;
         }
         let mkv = dir.join("video.mkv");
-        match local.start_video(&mkv) {
+        match self.local.start_video(&mkv) {
             Ok(child) => {
                 videos.insert(client_id.to_string(), (child, mkv));
             }
@@ -292,12 +268,13 @@ impl ToolHandler {
 
             ToolCall::Computer { .. } => ToolResult::err("unsupported computer action"),
 
-            device_call => self.require_lease_then(client_id, || match &self.local {
-                Some(local) => settle(match hand_use(device_call) {
-                    Some(on_keyboard) => local.exclusive(Some(on_keyboard), || self.local_call(local, device_call, client_id)),
-                    None => self.local_call(local, device_call, client_id),
-                }),
-                None => self.guest_call(device_call),
+            device_call => self.require_lease_then(client_id, || {
+                settle(match hand_use(device_call) {
+                    Some(on_keyboard) => self.local.exclusive(Some(on_keyboard), || {
+                        self.local_call(&self.local, device_call, client_id)
+                    }),
+                    None => self.local_call(&self.local, device_call, client_id),
+                })
             }),
         }
     }
@@ -655,59 +632,6 @@ impl ToolHandler {
         Ok(result)
     }
 
-    /// VM mode: forward to the guest over the control channel.
-    fn guest_call(&self, call: &ToolCall) -> ToolResult {
-        use taboom_proto::{ClickType, ImageFormat, MouseButton, MouseClickReq, ScreenshotReq};
-        let msg = match call {
-            ToolCall::Screenshot { frame_id, max_edge, region } => Message::Screenshot(ScreenshotReq {
-                format: ImageFormat::Png,
-                frame_id: frame_id.as_deref().and_then(|s| s.parse().ok()),
-                max_edge: *max_edge,
-                region: region.as_ref().map(|r| taboom_proto::Region { x: r.x, y: r.y, width: r.w, height: r.h }),
-            }),
-            ToolCall::Zoom { region } => Message::Screenshot(ScreenshotReq {
-                format: ImageFormat::Png,
-                frame_id: None,
-                max_edge: None,
-                region: Some(taboom_proto::Region { x: region.x, y: region.y, width: region.w, height: region.h }),
-            }),
-            ToolCall::Click { x, y, button, count, .. } => Message::MouseClick(MouseClickReq {
-                x: *x,
-                y: *y,
-                button: match button.as_str() {
-                    "right" => MouseButton::Right,
-                    "middle" => MouseButton::Middle,
-                    _ => MouseButton::Left,
-                },
-                click_type: match count {
-                    2 => ClickType::Double,
-                    3 => ClickType::Triple,
-                    _ => ClickType::Single,
-                },
-            }),
-            ToolCall::Move { x, y, .. } => Message::MouseMove(taboom_proto::MouseMoveReq { x: *x, y: *y }),
-            ToolCall::Drag { from, to, .. } => {
-                self.try_dispatch(&Message::MouseMove(taboom_proto::MouseMoveReq { x: from.x, y: from.y }));
-                Message::MouseMove(taboom_proto::MouseMoveReq { x: to.x, y: to.y })
-            }
-            ToolCall::Scroll { x, y, direction, amount } => {
-                let n = *amount;
-                let (delta_x, delta_y) = match direction.as_str() {
-                    "up" => (0, -n),
-                    "down" => (0, n),
-                    "left" => (-n, 0),
-                    _ => (n, 0),
-                };
-                Message::Scroll(taboom_proto::ScrollReq { x: x.unwrap_or(0), y: y.unwrap_or(0), delta_x, delta_y })
-            }
-            ToolCall::Type { text, .. } => Message::KeyType(taboom_proto::KeyTypeReq { text: text.clone() }),
-            ToolCall::Key { combo } => Message::KeyPress(taboom_proto::KeyPressReq { key: combo.clone(), modifiers: vec![] }),
-            other => return ToolResult::err(&format!("{} is not available in VM mode yet", tool_name(other))),
-        };
-        self.try_dispatch(&msg);
-        ToolResult::ok(json!({ "dispatched": tool_name(call), "message": format!("{msg:?}") }))
-    }
-
     fn handle_persona_status(&self, client_id: &str) -> ToolResult {
         let mgr = self.lease_mgr.lock().unwrap();
         let Some(lease) = mgr.lease_for(client_id) else {
@@ -797,7 +721,7 @@ impl ToolHandler {
             })
         } else {
             // one desktop, one browser: a second persona would pull the browser from under the first
-            if let (Some(_), Some(other)) = (&self.local, mgr.any()) {
+            if let Some(other) = mgr.any() {
                 return ToolResult::err(&format!(
                     "this desktop runs one persona at a time and '{}' is held by '{}'; release it first",
                     other.persona, other.agent_id
@@ -813,19 +737,17 @@ impl ToolHandler {
             }
         };
         drop(mgr);
-        if let Some(local) = &self.local {
-            let active = self.personas.home().join("run").join("active-persona");
-            match local.use_profile(persona_id, &profile, &active) {
-                Ok(restarted) => {
-                    result["profile"] = json!(profile);
-                    result["browser"] = json!(if restarted { "restarted on this profile" } else { "unchanged" });
+        let active = self.personas.home().join("run").join("active-persona");
+        match self.local.use_profile(persona_id, &profile, &active) {
+            Ok(restarted) => {
+                result["profile"] = json!(profile);
+                result["browser"] = json!(if restarted { "restarted on this profile" } else { "unchanged" });
+            }
+            Err(e) => {
+                if result["status"] == "acquired" {
+                    let _ = self.lease_mgr.lock().unwrap().release(persona_id, client_id);
                 }
-                Err(e) => {
-                    if result["status"] == "acquired" {
-                        let _ = self.lease_mgr.lock().unwrap().release(persona_id, client_id);
-                    }
-                    return ToolResult::err(&format!("could not open {}: {e:#}", profile.display()));
-                }
+                return ToolResult::err(&format!("could not open {}: {e:#}", profile.display()));
             }
         }
         ToolResult::ok(result)

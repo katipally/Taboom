@@ -155,7 +155,6 @@ mod tests {
             name: name.into(),
             cpus,
             ram_mb: ram,
-            disk_gb: 20,
             timezone: "America/New_York".into(),
             route: crate::persona::RouteConfig::Direct,
             browser: BrowserSettings::default(),

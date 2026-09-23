@@ -6,7 +6,6 @@ export WAYLAND_DISPLAY="wayland-1"
 export WLR_BACKENDS="headless"
 export WLR_NO_HARDWARE_CURSORS="1"
 export WLR_LIBINPUT_NO_DEVICES="1"
-export TABOOM_LOCAL="1"
 
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
@@ -62,7 +61,7 @@ websockify --web /usr/share/novnc 0.0.0.0:6080 127.0.0.1:5900 >/dev/null 2>&1 &
 
 # ensure taboom home dirs exist
 export TABOOM_HOME="${TABOOM_HOME:-/home/taboom/.taboom}"
-mkdir -p "$TABOOM_HOME"/{personas,profiles,images,run,audit,logs,vault}
+mkdir -p "$TABOOM_HOME"/{personas,profiles,run,audit,logs,vault}
 
 # create default persona if none exists
 if [ ! -f "$TABOOM_HOME/personas/default.toml" ]; then
@@ -70,7 +69,6 @@ if [ ! -f "$TABOOM_HOME/personas/default.toml" ]; then
 name = "default"
 cpus = 2
 ram_mb = 4096
-disk_gb = 20
 timezone = "America/New_York"
 
 [route]

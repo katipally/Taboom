@@ -6,17 +6,7 @@ use std::path::PathBuf;
 pub struct DaemonConfig {
     #[serde(skip)]
     pub home: PathBuf,
-    #[serde(default = "default_max_vms")]
-    pub max_vms: u32,
-    #[serde(default = "default_heartbeat_interval_secs")]
-    pub heartbeat_interval_secs: u64,
-    #[serde(default = "default_heartbeat_timeout_secs")]
-    pub heartbeat_timeout_secs: u64,
 }
-
-fn default_max_vms() -> u32 { 4 }
-fn default_heartbeat_interval_secs() -> u64 { 2 }
-fn default_heartbeat_timeout_secs() -> u64 { 10 }
 
 impl DaemonConfig {
     pub fn load() -> Result<Self> {
@@ -36,9 +26,6 @@ impl DaemonConfig {
         } else {
             DaemonConfig {
                 home: PathBuf::new(),
-                max_vms: default_max_vms(),
-                heartbeat_interval_secs: default_heartbeat_interval_secs(),
-                heartbeat_timeout_secs: default_heartbeat_timeout_secs(),
             }
         };
 
@@ -47,7 +34,7 @@ impl DaemonConfig {
     }
 
     pub fn ensure_dirs(&self) -> Result<()> {
-        for sub in ["personas", "images", "run", "audit", "logs", "vault"] {
+        for sub in ["personas", "run", "audit", "logs", "vault"] {
             std::fs::create_dir_all(self.home.join(sub))
                 .with_context(|| format!("creating {}", self.home.join(sub).display()))?;
         }

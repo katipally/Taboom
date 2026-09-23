@@ -8,8 +8,6 @@ pub struct PersonaConfig {
     pub name: String,
     pub cpus: u32,
     pub ram_mb: u32,
-    #[serde(default = "default_disk_gb")]
-    pub disk_gb: u32,
     #[serde(default = "default_timezone")]
     pub timezone: String,
     #[serde(default)]
@@ -131,10 +129,6 @@ fn default_download_dir() -> String {
     "/home/taboom/Downloads".into()
 }
 
-fn default_disk_gb() -> u32 {
-    20
-}
-
 fn default_timezone() -> String {
     "America/New_York".into()
 }
@@ -196,7 +190,7 @@ fn personas_dir(home: &Path) -> std::path::PathBuf {
 }
 
 fn ensure_dirs(home: &Path) -> Result<()> {
-    for sub in ["personas", "images", "run", "audit", "logs"] {
+    for sub in ["personas", "run", "audit", "logs"] {
         std::fs::create_dir_all(home.join(sub))
             .with_context(|| format!("creating {}", home.join(sub).display()))?;
     }
@@ -217,7 +211,6 @@ pub async fn persona_create(home: &Path, name: &str, cpus: u32, ram: u32) -> Res
         name: name.to_string(),
         cpus,
         ram_mb: ram,
-        disk_gb: default_disk_gb(),
         timezone: derived.timezone,
         route: RouteConfig::Direct,
         browser: BrowserSettings {
@@ -321,38 +314,6 @@ pub async fn persona_delete(home: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn up(home: &Path, persona: &str) -> Result<()> {
-    let path = personas_dir(home).join(format!("{persona}.toml"));
-    if !path.exists() {
-        bail!("persona '{persona}' not found; create it with: taboom persona create {persona}");
-    }
-
-    let sock = home.join("run").join("taboomd.sock");
-    if !sock.exists() {
-        bail!("taboomd is not running; start it first");
-    }
-
-    let resp = ipc_command(&sock, &format!("start {persona}")).await?;
-    println!("{resp}");
-    Ok(())
-}
-
-pub async fn down(home: &Path, persona: &str) -> Result<()> {
-    let path = personas_dir(home).join(format!("{persona}.toml"));
-    if !path.exists() {
-        bail!("persona '{persona}' not found");
-    }
-
-    let sock = home.join("run").join("taboomd.sock");
-    if !sock.exists() {
-        bail!("taboomd is not running; start it first");
-    }
-
-    let resp = ipc_command(&sock, &format!("stop {persona}")).await?;
-    println!("{resp}");
-    Ok(())
-}
-
 pub async fn logs(home: &Path, persona: Option<&str>, lines: usize) -> Result<()> {
     let audit_dir = home.join("audit");
     if !audit_dir.exists() {
@@ -376,70 +337,6 @@ pub async fn logs(home: &Path, persona: Option<&str>, lines: usize) -> Result<()
     for line in &total[start..] {
         println!("{line}");
     }
-    Ok(())
-}
-
-pub async fn image_build(_home: &Path) -> Result<()> {
-    println!("Image build: use cloud-init templates from image/ directory");
-    println!("(full build pipeline coming in a later block)");
-    Ok(())
-}
-
-pub async fn image_pull(_home: &Path, url: Option<&str>) -> Result<()> {
-    match url {
-        Some(u) => println!("Would pull image from: {u}"),
-        None => println!("Would pull latest image from default registry"),
-    }
-    Ok(())
-}
-
-pub async fn image_verify(home: &Path) -> Result<()> {
-    let images_dir = home.join("images");
-    if !images_dir.exists() {
-        println!("No images directory found.");
-        return Ok(());
-    }
-    println!("Image verification (signature checking coming in a later block)");
-    Ok(())
-}
-
-pub async fn image_list(home: &Path) -> Result<()> {
-    let images_dir = home.join("images");
-    if !images_dir.exists() {
-        println!("No images found.");
-        return Ok(());
-    }
-
-    let entries: Vec<_> = std::fs::read_dir(&images_dir)?
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|ext| ext == "qcow2")
-                .unwrap_or(false)
-        })
-        .collect();
-
-    if entries.is_empty() {
-        println!("No images found.");
-        return Ok(());
-    }
-
-    for entry in entries {
-        let meta = entry.metadata()?;
-        let size_mb = meta.len() / (1024 * 1024);
-        println!("{} ({} MB)", entry.file_name().to_string_lossy(), size_mb);
-    }
-    Ok(())
-}
-
-pub async fn image_gc(home: &Path) -> Result<()> {
-    let images_dir = home.join("images");
-    if !images_dir.exists() {
-        println!("Nothing to garbage collect.");
-        return Ok(());
-    }
-    println!("Image GC (removing unused overlays coming in a later block)");
     Ok(())
 }
 

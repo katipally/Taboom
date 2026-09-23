@@ -1,7 +1,6 @@
 mod config;
 mod audit;
 mod consistency;
-mod gpu;
 mod handler;
 mod handoff;
 mod hardware;
@@ -51,10 +50,6 @@ async fn main() -> Result<()> {
     validate_routes(&personas, &route_checker);
     info!("route checker initialized");
 
-    let gpu_tier = gpu::select_gpu_tier(false, cfg!(target_os = "linux"));
-    let gpu_caps = gpu_tier.capabilities();
-    info!(tier = ?gpu_tier, webgl = gpu_caps.webgl_available, "GPU tier selected");
-
     let lease_mgr = lease::LeaseManager::new();
 
     let vault = Arc::new(vault::Vault::open(&config.home));
@@ -94,8 +89,6 @@ async fn main() -> Result<()> {
     )
     .await?;
     info!("IPC listener started");
-
-    adopt_running_vms(&config).await;
 
     info!("taboomd ready, waiting for shutdown signal");
     signal::ctrl_c().await?;
@@ -151,18 +144,14 @@ fn validate_routes(
     }
 
     for p in personas.list() {
-        let route = p.route.to_proto_route();
-        let warnings = route_checker.validate_at_creation(&route, &p.timezone);
+        let warnings = route_checker.validate_at_creation(&p.route, &p.timezone);
         for w in warnings {
             warn!(persona = %p.name, "{w}");
         }
 
-        if let taboom_proto::Route::Proxy { address, .. } = &route {
+        if let persona::RouteConfig::Proxy { address, .. } = &p.route {
             if let Ok(ip) = address.parse::<std::net::IpAddr>() {
                 let health = route_checker.check_exit_geo(ip, &p.timezone);
-                if health.state != taboom_proto::RouteState::Up {
-                    warn!(persona = %p.name, "route not up during validation");
-                }
                 if health.tz_mismatch {
                     warn!(
                         persona = %p.name,
@@ -174,21 +163,6 @@ fn validate_routes(
                     warn!(persona = %p.name, "exit IP belongs to a datacenter ASN");
                 }
             }
-        }
-    }
-}
-
-async fn adopt_running_vms(config: &config::DaemonConfig) {
-    let run_dir = config.home.join("run");
-    let Ok(entries) = std::fs::read_dir(&run_dir) else {
-        return;
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().map(|e| e == "pid").unwrap_or(false) {
-            let name = path.file_stem().unwrap_or_default().to_string_lossy();
-            info!(persona = %name, "checking for running VM to adopt");
         }
     }
 }

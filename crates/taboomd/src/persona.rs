@@ -4,15 +4,12 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
-use taboom_proto::{BrowserConfig, ProxyAuth, ProxyProtocol, Route};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersonaConfig {
     pub name: String,
     pub cpus: u32,
     pub ram_mb: u32,
-    #[serde(default = "default_disk_gb")]
-    pub disk_gb: u32,
     #[serde(default = "default_timezone")]
     pub timezone: String,
     #[serde(default)]
@@ -82,10 +79,6 @@ fn default_speed() -> SpeedClass {
     SpeedClass::Medium
 }
 
-fn default_disk_gb() -> u32 {
-    20
-}
-
 fn default_timezone() -> String {
     "America/New_York".into()
 }
@@ -119,35 +112,6 @@ fn default_proxy_protocol() -> ProxyProtocolConfig {
     ProxyProtocolConfig::Socks5
 }
 
-impl RouteConfig {
-    pub fn to_proto_route(&self) -> Route {
-        match self {
-            RouteConfig::Direct => Route::Direct,
-            RouteConfig::Proxy {
-                address,
-                port,
-                username,
-                password,
-                protocol,
-            } => Route::Proxy {
-                address: address.clone(),
-                port: *port,
-                auth: match (username, password) {
-                    (Some(u), Some(p)) => Some(ProxyAuth {
-                        username: u.clone(),
-                        password: p.clone(),
-                    }),
-                    _ => None,
-                },
-                protocol: match protocol {
-                    ProxyProtocolConfig::Socks5 => ProxyProtocol::Socks5,
-                    ProxyProtocolConfig::Http => ProxyProtocol::Http,
-                },
-            },
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserSettings {
     #[serde(default = "default_accept_languages")]
@@ -171,15 +135,6 @@ fn default_accept_languages() -> String {
 
 fn default_download_dir() -> String {
     "/home/taboom/Downloads".into()
-}
-
-impl BrowserSettings {
-    pub fn to_proto_config(&self) -> BrowserConfig {
-        BrowserConfig {
-            accept_languages: self.accept_languages.clone(),
-            download_dir: self.download_dir.clone(),
-        }
-    }
 }
 
 pub struct PersonaRegistry {
@@ -275,7 +230,6 @@ pub fn template(name: &str) -> PersonaConfig {
         name: name.into(),
         cpus: 2,
         ram_mb: 4096,
-        disk_gb: default_disk_gb(),
         timezone: default_timezone(),
         route: RouteConfig::Direct,
         browser: BrowserSettings::default(),

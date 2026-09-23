@@ -56,7 +56,6 @@ RUN useradd -m -u 1000 -s /bin/bash taboom \
     && mkdir -p /home/taboom/.config/sway \
        /home/taboom/.taboom/personas \
        /home/taboom/.taboom/profiles \
-       /home/taboom/.taboom/images \
        /home/taboom/.taboom/run \
        /home/taboom/.taboom/audit \
        /home/taboom/.taboom/logs \
@@ -82,7 +81,6 @@ WORKDIR /home/taboom
 
 ENV XDG_RUNTIME_DIR=/run/user/1000
 ENV WAYLAND_DISPLAY=wayland-1
-ENV TABOOM_LOCAL=1
 ENV TABOOM_HOME=/home/taboom/.taboom
 
 EXPOSE 3456 6080

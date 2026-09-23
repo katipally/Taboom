@@ -6,13 +6,10 @@ use crate::totp;
 use crate::vault::{SecretType, Vault};
 use anyhow::Result;
 use serde_json::json;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
-use taboom_vmm::{QemuConfig, Platform, ScreenConfig, VmSupervisor};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
-use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
 use tracing::{error, info};
 
@@ -21,8 +18,6 @@ struct IpcState {
     personas: Arc<PersonaRegistry>,
     audit: Arc<AuditLog>,
     liveview_secret: Vec<u8>,
-    home: std::path::PathBuf,
-    supervisors: AsyncMutex<HashMap<String, VmSupervisor>>,
 }
 
 pub async fn start_listener(
@@ -45,8 +40,6 @@ pub async fn start_listener(
         personas,
         audit,
         liveview_secret: b"taboom-liveview-default-key-0000".to_vec(),
-        home: config.home.clone(),
-        supervisors: AsyncMutex::new(HashMap::new()),
     });
 
     let handle = tokio::spawn(async move {
@@ -78,7 +71,7 @@ async fn handle_connection(
     let mut lines = BufReader::new(reader).lines();
 
     while let Some(line) = lines.next_line().await? {
-        let response = process_command(&line, state).await;
+        let response = process_command(&line, state);
         writer.write_all(response.as_bytes()).await?;
         writer.write_all(b"\n").await?;
     }
@@ -86,111 +79,10 @@ async fn handle_connection(
     Ok(())
 }
 
-async fn process_command(line: &str, state: &IpcState) -> String {
+fn process_command(line: &str, state: &IpcState) -> String {
     let parts: Vec<&str> = line.trim().splitn(2, ' ').collect();
     match parts.first().copied() {
         Some("ping") => json!({"status": "ok", "message": "pong"}).to_string(),
-        Some("status") => {
-            let sups = state.supervisors.lock().await;
-            let running: Vec<&str> = sups.iter()
-                .filter(|(_, s)| s.is_running())
-                .map(|(name, _)| name.as_str())
-                .collect();
-            json!({"status": "ok", "vms": running}).to_string()
-        }
-        Some("start") => {
-            let persona = parts.get(1).unwrap_or(&"");
-            if persona.is_empty() {
-                return json!({"status": "error", "message": "missing persona name"}).to_string();
-            }
-            match state.personas.get(persona) {
-                Some(p) => {
-                    let base_image = state.home.join("images").join("v1").join("base.qcow2");
-                    if !base_image.exists() {
-                        return json!({
-                            "status": "error",
-                            "message": "base image not found, run `taboom image build` first"
-                        }).to_string();
-                    }
-
-                    let platform = match Platform::detect() {
-                        Some(pl) => pl,
-                        None => return json!({
-                            "status": "error",
-                            "message": "unsupported platform for QEMU"
-                        }).to_string(),
-                    };
-
-                    let persona_dir = state.home.join("personas").join(persona);
-                    let run_dir = state.home.join("run");
-                    let screen = p.hardware.as_ref().map(|hw| ScreenConfig {
-                        width: hw.screen_width,
-                        height: hw.screen_height,
-                        dpr: hw.dpr,
-                    });
-
-                    let overlay = persona_dir.join("root.qcow2");
-                    let home = persona_dir.join("home.qcow2");
-                    let cidata = state.home.join("cidata.iso");
-
-                    let qemu_config = QemuConfig {
-                        name: p.name.clone(),
-                        cpus: p.cpus,
-                        ram_mb: p.ram_mb,
-                        base_image: base_image.clone(),
-                        overlay_image: overlay,
-                        home_image: home,
-                        cloud_init_iso: if cidata.exists() { Some(cidata) } else { None },
-                        qmp_socket: run_dir.join(format!("{}.qmp", p.name)),
-                        control_socket: run_dir.join(format!("{}.ctl", p.name)),
-                        pidfile: run_dir.join(format!("{}.pid", p.name)),
-                        platform,
-                        display: false,
-                        route: p.route.to_proto_route(),
-                        screen,
-                    };
-
-                    let browser_config = p.browser.to_proto_config();
-                    let _ = state.audit.log_persona("vm_start", persona, &format!(
-                        "cpus={} ram={}MB browser_langs={}",
-                        p.cpus, p.ram_mb, browser_config.accept_languages,
-                    ));
-
-                    let mut supervisor = VmSupervisor::new(qemu_config);
-                    match supervisor.start().await {
-                        Ok(()) => {
-                            info!(persona = %p.name, "VM started");
-                            state.supervisors.lock().await.insert(p.name.clone(), supervisor);
-                            json!({"status": "ok", "message": format!("VM started for '{persona}'")}).to_string()
-                        }
-                        Err(e) => {
-                            error!(persona = %p.name, error = %e, "VM start failed");
-                            json!({"status": "error", "message": format!("VM start failed: {e}")}).to_string()
-                        }
-                    }
-                }
-                None => json!({"status": "error", "message": format!("persona '{persona}' not found")}).to_string(),
-            }
-        }
-        Some("stop") => {
-            let persona = parts.get(1).unwrap_or(&"");
-            if persona.is_empty() {
-                return json!({"status": "error", "message": "missing persona name"}).to_string();
-            }
-            let _ = state.audit.log_persona("vm_stop", persona, "requested via IPC");
-            let mut sups = state.supervisors.lock().await;
-            if let Some(sup) = sups.get_mut(*persona) {
-                match sup.stop().await {
-                    Ok(()) => {
-                        sups.remove(*persona);
-                        json!({"status": "ok", "message": format!("VM stopped for '{persona}'")}).to_string()
-                    }
-                    Err(e) => json!({"status": "error", "message": format!("stop failed: {e}")}).to_string(),
-                }
-            } else {
-                json!({"status": "ok", "message": format!("no running VM for '{persona}'")}).to_string()
-            }
-        }
         Some("persona-list") => {
             let names: Vec<String> = state.personas.list().into_iter().map(|p| p.name).collect();
             json!({"status": "ok", "personas": names}).to_string()
@@ -308,17 +200,6 @@ async fn process_command(line: &str, state: &IpcState) -> String {
                     };
                     json!({"status": "ok", "message": format!("resolve not available via IPC (use MCP), would set to {status:?}"), "is_terminal": status == crate::handoff::HandoffStatus::Done || status == crate::handoff::HandoffStatus::Aborted}).to_string()
                 }
-                Err(e) => json!({"status": "error", "message": e.to_string()}).to_string(),
-            }
-        }
-        Some("disk-create") => {
-            let args = parts.get(1).unwrap_or(&"");
-            let arg_parts: Vec<&str> = args.splitn(2, ' ').collect();
-            let path_str = arg_parts.first().unwrap_or(&"");
-            let size_gb: u32 = arg_parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(20);
-            let path = std::path::PathBuf::from(path_str);
-            match taboom_vmm::create_empty_disk(&path, size_gb).await {
-                Ok(()) => json!({"status": "ok", "path": path_str, "size_gb": size_gb}).to_string(),
                 Err(e) => json!({"status": "error", "message": e.to_string()}).to_string(),
             }
         }

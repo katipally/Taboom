@@ -7,10 +7,6 @@ edition.workspace = true
 name = "taboomd"
 path = "src/main.rs"
 
-[[bin]]
-name = "ctl-test"
-path = "src/bin/ctl_test.rs"
-
 [dependencies]
 anyhow = { workspace = true }
 chrono = { workspace = true }
@@ -31,9 +27,6 @@ sha1 = { workspace = true }
 data-encoding = { workspace = true }
 age = { workspace = true }
 ciborium = { workspace = true }
-bytes = { workspace = true }
-taboom-proto = { path = "../taboom-proto" }
-taboom-vmm = { path = "../taboom-vmm" }
 taboom-humanizer = { path = "../taboom-humanizer" }
 nix = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
