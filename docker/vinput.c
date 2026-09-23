@@ -14,6 +14,10 @@
  *   wheel V H           discrete wheel notches (V > 0 scrolls down, H > 0 scrolls right)
  *   key CODE 0|1        evdev keycode press/release
  *   sym NAME 0|1        keysym by name (Return, Control_L, a, F5, ...) press/release
+ *   lookup NAME         -> "ok CODE LEVEL": evdev key that types keysym NAME (or U20AC-style
+ *                       codepoint) on this layout; LEVEL bit 0 = Shift, bit 1 = AltGr
+ *   state               -> "ok DEPRESSED LATCHED LOCKED LOCKED_LAYOUT EFFECTIVE_LAYOUT" for exact typing
+ *   trace 0|1           pause/resume VINPUT_TRACE; replies with the previous enabled state
  *   release             release every held key and button
  */
 #define _GNU_SOURCE
@@ -48,14 +52,18 @@ static double cur_x = 960, cur_y = 540;
 static unsigned char keys_down[KEY_MAX + 1];
 static unsigned char buttons_down[3];
 static const uint32_t button_codes[3] = { BTN_LEFT, BTN_RIGHT, BTN_MIDDLE };
-/* VINPUT_TRACE=<file>: log every event as "ms kind a b" for offline analysis (eval lab) */
+/* VINPUT_TRACE=<file>: append common JSONL input events for offline eval-lab analysis. */
 static FILE *trace;
+static const char *trace_path;
 
 static void trace_event(const char *kind, int a, int b) {
     if (!trace) return;
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    fprintf(trace, "%.3f %s %d %d\n", ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6, kind, a, b);
+    unsigned long long timestamp_us = (unsigned long long)ts.tv_sec * 1000000ULL
+        + (unsigned long long)ts.tv_nsec / 1000ULL;
+    fprintf(trace, "{\"timestamp_us\":%llu,\"event\":\"%s\",\"a\":%d,\"b\":%d}\n",
+        timestamp_us, kind, a, b);
 }
 
 static void registry_global(void *data, struct wl_registry *reg, uint32_t name,
@@ -112,18 +120,53 @@ static void send_key(uint32_t code, int down) {
         xkb_state_serialize_layout(xstate, XKB_STATE_LAYOUT_EFFECTIVE));
 }
 
-/* Keycode carrying `sym`, preferring the unshifted level. O(keycodes x levels), ~250 x 4. */
-static int keysym_to_code(xkb_keysym_t sym) {
+/* Modifiers that reach `level` of `kc`, as bit 0 Shift / bit 1 AltGr (Mod5); -1 when every
+ * way to that level needs another modifier (NumLock, Lock, Ctrl...). */
+static int level_mods(xkb_keycode_t kc, xkb_level_index_t level) {
+    xkb_mod_mask_t shift = 1u << xkb_keymap_mod_get_index(keymap, XKB_MOD_NAME_SHIFT);
+    xkb_mod_mask_t altgr = 1u << xkb_keymap_mod_get_index(keymap, "Mod5");
+    xkb_mod_mask_t masks[16];
+    size_t n = xkb_keymap_key_get_mods_for_level(keymap, kc, 0, level, masks, 16);
+    for (size_t i = 0; i < n; i++)
+        if (!(masks[i] & ~(shift | altgr)))
+            return (masks[i] & shift ? 1 : 0) | (masks[i] & altgr ? 2 : 0);
+    return -1;
+}
+
+/* Keycode carrying `sym` (or the same character), preferring the lowest level and the main
+ * block over the keypad. With `mods`, only levels reachable by Shift/AltGr count and their
+ * modifiers are stored there. O(keycodes x levels), ~250 x 4. */
+static int find_key(xkb_keysym_t sym, int *mods) {
+    /* xkeyboard-config's hidden <LVL3> key (evdev 84, no physical key) also carries AltGr and
+     * sorts first; pages would see code "Unidentified". A real keyboard's AltGr is Right Alt. */
+    if (sym == XKB_KEY_ISO_Level3_Shift) {
+        const xkb_keysym_t *ralt;
+        if (xkb_keymap_key_get_syms_by_level(keymap, KEY_RIGHTALT + 8, 0, 0, &ralt) == 1 && ralt[0] == sym) {
+            if (mods) *mods = 0;
+            return KEY_RIGHTALT;
+        }
+    }
+    uint32_t cp = xkb_keysym_to_utf32(sym);
     xkb_keycode_t min = xkb_keymap_min_keycode(keymap), max = xkb_keymap_max_keycode(keymap);
     for (xkb_level_index_t level = 0; level < 4; level++) {
         for (xkb_keycode_t kc = min; kc <= max; kc++) {
             const xkb_keysym_t *syms;
             int n = xkb_keymap_key_get_syms_by_level(keymap, kc, 0, level, &syms);
-            for (int i = 0; i < n; i++)
-                if (syms[i] == sym) return (int)kc - 8;
+            for (int i = 0; i < n; i++) {
+                int same = syms[i] == sym || (cp && xkb_keysym_to_utf32(syms[i]) == cp
+                    && !(syms[i] >= XKB_KEY_KP_Space && syms[i] <= XKB_KEY_KP_Equal));
+                if (!same) continue;
+                if (mods && (*mods = level_mods(kc, level)) < 0) continue;
+                return (int)kc - 8;
+            }
         }
     }
     return -1;
+}
+
+static xkb_keysym_t parse_sym(const char *name) {
+    xkb_keysym_t sym = xkb_keysym_from_name(name, XKB_KEYSYM_NO_FLAGS);
+    return sym != XKB_KEY_NoSymbol ? sym : xkb_keysym_from_name(name, XKB_KEYSYM_CASE_INSENSITIVE);
 }
 
 static void pointer_abs(void) {
@@ -138,6 +181,8 @@ static double clampd(double v, double lo, double hi) { return v < lo ? lo : v > 
 static void wheel(uint32_t axis, int notches) {
     int dir = notches > 0 ? 1 : -1;
     for (int i = 0; i < abs(notches); i++) {
+        trace_event("wheel", axis == WL_POINTER_AXIS_VERTICAL_SCROLL ? dir : 0,
+            axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL ? dir : 0);
         zwlr_virtual_pointer_v1_axis_source(pointer, WL_POINTER_AXIS_SOURCE_WHEEL);
         zwlr_virtual_pointer_v1_axis_discrete(pointer, now_ms(), axis,
             wl_fixed_from_int(dir * 15), dir);
@@ -194,11 +239,33 @@ static void handle(char *line, char *reply, size_t cap) {
     } else if (!strcmp(cmd, "key") && sscanf(line, "%*s %d %d", &n, &down) == 2 && n > 0 && n <= KEY_MAX) {
         send_key((uint32_t)n, !!down);
     } else if (!strcmp(cmd, "sym") && sscanf(line, "%*s %63s %d", name, &down) == 2) {
-        xkb_keysym_t sym = xkb_keysym_from_name(name, XKB_KEYSYM_NO_FLAGS);
-        if (sym == XKB_KEY_NoSymbol) sym = xkb_keysym_from_name(name, XKB_KEYSYM_CASE_INSENSITIVE);
-        int code = sym == XKB_KEY_NoSymbol ? -1 : keysym_to_code(sym);
+        xkb_keysym_t sym = parse_sym(name);
+        int code = sym == XKB_KEY_NoSymbol ? -1 : find_key(sym, NULL);
         if (code <= 0) snprintf(reply, cap, "err no key for %s on this layout", name);
         else send_key((uint32_t)code, !!down);
+    } else if (!strcmp(cmd, "lookup") && sscanf(line, "%*s %63s", name) == 1) {
+        xkb_keysym_t sym = parse_sym(name);
+        int mods = 0, code = sym == XKB_KEY_NoSymbol ? -1 : find_key(sym, &mods);
+        if (code <= 0) snprintf(reply, cap, "err no key for %s on this layout", name);
+        else snprintf(reply, cap, "ok %d %d", code, mods);
+    } else if (!strcmp(cmd, "state")) {
+        snprintf(reply, cap, "ok %u %u %u %u %u",
+            xkb_state_serialize_mods(xstate, XKB_STATE_MODS_DEPRESSED),
+            xkb_state_serialize_mods(xstate, XKB_STATE_MODS_LATCHED),
+            xkb_state_serialize_mods(xstate, XKB_STATE_MODS_LOCKED),
+            xkb_state_serialize_layout(xstate, XKB_STATE_LAYOUT_LOCKED),
+            xkb_state_serialize_layout(xstate, XKB_STATE_LAYOUT_EFFECTIVE));
+    } else if (!strcmp(cmd, "trace") && sscanf(line, "%*s %d", &n) == 1 && (n == 0 || n == 1)) {
+        int was_enabled = trace != NULL;
+        if (n == 0) {
+            if (trace) fclose(trace);
+            trace = NULL;
+        } else if (!trace && trace_path && *trace_path) {
+            trace = fopen(trace_path, "a");
+            if (trace) setvbuf(trace, NULL, _IOLBF, 0);
+            else { snprintf(reply, cap, "err could not reopen trace file"); return; }
+        }
+        snprintf(reply, cap, "ok %d", was_enabled);
     } else if (!strcmp(cmd, "release")) {
         release_all();
     } else {
@@ -211,7 +278,7 @@ int main(int argc, char **argv) {
     char path[108];
     snprintf(path, sizeof path, "%s/taboom-input.sock", argc > 1 ? argv[1] : dir ? dir : "/tmp");
 
-    const char *trace_path = getenv("VINPUT_TRACE");
+    trace_path = getenv("VINPUT_TRACE");
     if (trace_path && *trace_path) {
         trace = fopen(trace_path, "a");
         if (trace) setvbuf(trace, NULL, _IOLBF, 0);
