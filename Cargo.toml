@@ -1,11 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/taboom-proto",
     "crates/taboom-cli",
     "crates/taboomd",
-    "crates/taboom-vmm",
-    "crates/taboom-guest",
     "crates/taboom-humanizer",
 ]
 
@@ -16,7 +13,6 @@ license = "AGPL-3.0-or-later"
 
 [workspace.dependencies]
 anyhow = "1"
-bytes = "1"
 ciborium = "0.2"
 clap = { version = "4", features = ["derive", "env"] }
 directories = "5"
