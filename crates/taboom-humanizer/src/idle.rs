@@ -1,40 +1,6 @@
-use crate::{ActionPlan, HumanizerStyle, InputEvent, lognormal_sample, ms_to_us};
+use crate::{HumanizerStyle, lognormal_sample};
 use rand::rngs::StdRng;
 use rand::Rng;
-
-pub fn plan_idle(
-    duration_ms: f64,
-    style: &HumanizerStyle,
-    rng: &mut StdRng,
-) -> ActionPlan {
-    let mut plan = ActionPlan::new();
-    let mut t_us: u64 = 0;
-    let end_us = ms_to_us(duration_ms);
-
-    while t_us < end_us {
-        let interval_ms = lognormal_sample(rng, style.idle_drift_interval_ms, 800.0);
-        t_us += ms_to_us(interval_ms);
-
-        if t_us >= end_us {
-            break;
-        }
-
-        let max_drift = style.idle_drift_px.ceil() as i32;
-        if max_drift < 1 {
-            continue;
-        }
-
-        let dx = rng.gen_range(-max_drift..=max_drift);
-        let dy = rng.gen_range(-max_drift..=max_drift);
-
-        if dx != 0 || dy != 0 {
-            plan.push(t_us, InputEvent::MouseRel { dx, dy });
-            plan.push(t_us, InputEvent::Sync);
-        }
-    }
-
-    plan
-}
 
 /// A resting hand between actions, stepped in real time by the caller. Mostly still, with slow
 /// glides that stay near the anchor (where the last action happened). Glides use a minimum-jerk
@@ -148,20 +114,6 @@ mod tests {
     use rand::SeedableRng;
 
     #[test]
-    fn idle_produces_small_drifts() {
-        let style = HumanizerStyle::default();
-        let mut rng = StdRng::seed_from_u64(42);
-        let plan = plan_idle(10000.0, &style, &mut rng);
-
-        for ev in &plan.events {
-            if let InputEvent::MouseRel { dx, dy } = &ev.event {
-                assert!(dx.abs() <= 3);
-                assert!(dy.abs() <= 3);
-            }
-        }
-    }
-
-    #[test]
     fn idle_motion_rests_glides_and_stays_near_anchor() {
         let style = HumanizerStyle::default();
         let mut rng = StdRng::seed_from_u64(3);
@@ -197,13 +149,4 @@ mod tests {
         assert!(travelled < 60.0, "hand on keyboard moved {travelled} px in 30 s");
     }
 
-    #[test]
-    fn idle_stays_within_duration() {
-        let style = HumanizerStyle::default();
-        let mut rng = StdRng::seed_from_u64(7);
-        let plan = plan_idle(5000.0, &style, &mut rng);
-        for ev in &plan.events {
-            assert!(ev.timestamp_us <= ms_to_us(6000.0));
-        }
-    }
 }
