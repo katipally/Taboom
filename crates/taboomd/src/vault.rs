@@ -3,15 +3,11 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SecretType {
-    Password,
-    TotpSeed,
-    Note,
-}
+pub use taboom_core::admin::SecretType;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecretRecord {
@@ -116,9 +112,16 @@ impl Vault {
         allowed_domains: Vec<String>,
         secret_type: SecretType,
     ) -> Result<()> {
+        let allowed_domains = allowed_domains
+            .iter()
+            .map(|domain| {
+                normalize_domain(domain)
+                    .ok_or_else(|| anyhow::anyhow!("invalid allowed domain {domain:?}"))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let passphrase = self.require_unlocked()?;
         let mut data_guard = self.data.lock().unwrap();
-        let data = data_guard.as_mut().unwrap();
+        let data = data_guard.as_mut().ok_or_else(locked)?;
 
         if data.secrets.contains_key(name) {
             bail!("secret '{}' already exists", name);
@@ -141,14 +144,23 @@ impl Vault {
     pub fn get_secret(&self, name: &str) -> Result<Option<SecretRecord>> {
         self.require_unlocked()?;
         let data_guard = self.data.lock().unwrap();
-        let data = data_guard.as_ref().unwrap();
+        let data = data_guard.as_ref().ok_or_else(locked)?;
         Ok(data.secrets.get(name).cloned())
+    }
+
+    /// Reads only the allow-list and type so policy can be checked before the secret bytes are
+    /// copied out of the unlocked vault.
+    pub fn secret_metadata(&self, name: &str) -> Result<Option<(SecretType, Vec<String>)>> {
+        self.require_unlocked()?;
+        let data_guard = self.data.lock().unwrap();
+        let data = data_guard.as_ref().ok_or_else(locked)?;
+        Ok(data.secrets.get(name).map(|s| (s.secret_type.clone(), s.allowed_domains.clone())))
     }
 
     pub fn list_secrets(&self) -> Result<Vec<(String, SecretType, Vec<String>)>> {
         self.require_unlocked()?;
         let data_guard = self.data.lock().unwrap();
-        let data = data_guard.as_ref().unwrap();
+        let data = data_guard.as_ref().ok_or_else(locked)?;
         Ok(data
             .secrets
             .values()
@@ -159,7 +171,7 @@ impl Vault {
     pub fn remove_secret(&self, name: &str) -> Result<()> {
         let passphrase = self.require_unlocked()?;
         let mut data_guard = self.data.lock().unwrap();
-        let data = data_guard.as_mut().unwrap();
+        let data = data_guard.as_mut().ok_or_else(locked)?;
 
         if data.secrets.remove(name).is_none() {
             bail!("secret '{}' not found", name);
@@ -169,21 +181,19 @@ impl Vault {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn check_domain(&self, secret_name: &str, observed_domain: &str) -> Result<bool> {
         self.require_unlocked()?;
         let data_guard = self.data.lock().unwrap();
-        let data = data_guard.as_ref().unwrap();
+        let data = data_guard.as_ref().ok_or_else(locked)?;
 
         let record = data
             .secrets
             .get(secret_name)
             .ok_or_else(|| anyhow::anyhow!("secret '{}' not found", secret_name))?;
 
-        if record.allowed_domains.is_empty() {
-            return Ok(true);
-        }
-
-        Ok(domain_matches(&record.allowed_domains, observed_domain))
+        Ok(!record.allowed_domains.is_empty()
+            && domain_matches(&record.allowed_domains, observed_domain))
     }
 
     fn require_unlocked(&self) -> Result<String> {
@@ -249,12 +259,41 @@ impl Vault {
 }
 
 pub fn domain_matches(allowed: &[String], observed: &str) -> bool {
-    let observed_lower = observed.to_lowercase();
-    allowed.iter().any(|d| {
-        let allowed_lower = d.to_lowercase();
-        observed_lower == allowed_lower
-            || observed_lower.ends_with(&format!(".{}", allowed_lower))
+    let Some(observed) = normalize_domain(observed) else {
+        return false;
+    };
+    allowed.iter().filter_map(|d| normalize_domain(d)).any(|domain| {
+        observed == domain || observed.ends_with(&format!(".{domain}"))
     })
+}
+
+/// `lock()` can clear the data between `require_unlocked()` and the data lock.
+fn locked() -> anyhow::Error {
+    anyhow::anyhow!("vault is locked")
+}
+
+/// Canonical DNS host or IP form used for both persisted allow-lists and observed URLs.
+/// URLs, ports, credentials, paths and Unicode lookalikes are deliberately not accepted.
+pub fn normalize_domain(input: &str) -> Option<String> {
+    let domain = input.trim().strip_suffix('.').unwrap_or(input.trim());
+    if domain.is_empty() || domain.len() > 253 {
+        return None;
+    }
+    let domain = domain.to_ascii_lowercase();
+    if domain.parse::<IpAddr>().is_ok() {
+        return Some(domain);
+    }
+    if !domain.is_ascii() || domain.chars().any(|c| matches!(c, '/' | ':' | '@' | '?' | '#')) {
+        return None;
+    }
+    let valid = domain.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label.as_bytes()[0].is_ascii_alphanumeric()
+            && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+            && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    });
+    valid.then_some(domain)
 }
 
 #[cfg(test)]
@@ -331,13 +370,36 @@ mod tests {
     }
 
     #[test]
-    fn empty_allowed_domains_means_any() {
+    fn empty_allowed_domains_are_denied() {
         let (_dir, home) = temp_home();
         let vault = Vault::open(&home);
         vault.init("pass").unwrap();
         vault
             .add_secret("open", b"val", vec![], SecretType::Note)
             .unwrap();
-        assert!(vault.check_domain("open", "anything.com").unwrap());
+        assert!(!vault.check_domain("open", "anything.com").unwrap());
+    }
+
+    #[test]
+    fn canonical_domain_matching_normalizes_case_and_trailing_dot() {
+        assert!(domain_matches(&["GitHub.COM.".into()], "API.GITHUB.com."));
+        assert!(domain_matches(&["github.com".into()], "github.com"));
+        assert!(!domain_matches(&["github.com".into()], "notgithub.com"));
+        assert!(!domain_matches(&["https://github.com".into()], "github.com"));
+    }
+
+    #[test]
+    fn invalid_domain_is_rejected_when_saving() {
+        let (_dir, home) = temp_home();
+        let vault = Vault::open(&home);
+        vault.init("pass").unwrap();
+        assert!(vault.add_secret("bad", b"value", vec!["https://example.com".into()], SecretType::Password).is_err());
+        assert!(vault.add_secret("port", b"value", vec!["example.com:443".into()], SecretType::Password).is_err());
+    }
+
+    #[test]
+    fn ipv6_hosts_are_accepted_in_canonical_form() {
+        assert_eq!(normalize_domain("2001:db8::1").as_deref(), Some("2001:db8::1"));
+        assert!(domain_matches(&["2001:db8::1".into()], "2001:db8::1"));
     }
 }
