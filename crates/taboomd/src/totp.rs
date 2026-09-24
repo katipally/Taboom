@@ -29,12 +29,11 @@ pub fn generate_totp_with_config(
     time: SystemTime,
     config: &TotpConfig,
 ) -> Result<String> {
+    // Authenticator apps show seeds in spaced groups ("JBSW Y3DP ...").
+    let seed: String = seed_base32.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_uppercase();
     let key = data_encoding::BASE32_NOPAD
-        .decode(seed_base32.trim().to_uppercase().as_bytes())
-        .or_else(|_| {
-            data_encoding::BASE32
-                .decode(seed_base32.trim().to_uppercase().as_bytes())
-        })
+        .decode(seed.as_bytes())
+        .or_else(|_| data_encoding::BASE32.decode(seed.as_bytes()))
         .map_err(|e| anyhow::anyhow!("invalid base32 seed: {e}"))?;
 
     if key.is_empty() {
@@ -80,20 +79,18 @@ mod tests {
     }
 
     #[test]
-    fn rfc6238_vector_59() {
-        let code = generate_totp(TEST_SEED, time_from_secs(59)).unwrap();
-        assert_eq!(code.len(), 6);
-        // counter = 59/30 = 1
-        let expected = hotp(b"12345678901234567890", 1, 6).unwrap();
-        assert_eq!(code, format!("{:06}", expected));
+    fn rfc6238_published_vectors() {
+        let eight = TotpConfig { digits: 8, period_secs: 30 };
+        for (secs, expected) in [(59, "94287082"), (1111111109, "07081804"), (1111111111, "14050471"), (1234567890, "89005924")] {
+            assert_eq!(generate_totp_with_config(TEST_SEED, time_from_secs(secs), &eight).unwrap(), expected);
+            assert_eq!(generate_totp(TEST_SEED, time_from_secs(secs)).unwrap(), expected[2..]);
+        }
     }
 
     #[test]
-    fn rfc6238_vector_1111111109() {
-        let code = generate_totp(TEST_SEED, time_from_secs(1111111109)).unwrap();
-        assert_eq!(code.len(), 6);
-        let expected = hotp(b"12345678901234567890", 1111111109 / 30, 6).unwrap();
-        assert_eq!(code, format!("{:06}", expected));
+    fn spaced_lowercase_seed_accepted() {
+        let spaced = "gezd gnbv gy3t qojq gezd gnbv gy3t qojq";
+        assert_eq!(generate_totp(spaced, time_from_secs(59)).unwrap(), "287082");
     }
 
     #[test]
