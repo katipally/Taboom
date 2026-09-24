@@ -1,25 +1,82 @@
 #!/bin/bash
-# Go to the browser: focus an open window, or start Chrome on the active persona's profile.
-# taboomd writes the active persona to run/active-persona when a persona is acquired.
-if swaymsg -q '[app_id="^google-chrome"] focus' 2>/dev/null; then
+# Go to the browser: focus a healthy existing engine, or start it with this persona's profile.
+home="${TABOOM_HOME:-$HOME/.taboom}"
+# A browser without the persona's settings would be a mismatch, so there is no fallback.
+source "$home/run/env" || { echo "taboom-browser: no $home/run/env; boot-check has not run" >&2; exit 1; }
+profile="$TABOOM_PROFILE"
+case "${TABOOM_BROWSER_ENGINE:-}" in
+    chrome)
+        browser_flags=("${TABOOM_CHROME_FLAGS[@]}")
+        ;;
+    fortress)
+        browser_flags=("${TABOOM_FORTRESS_FLAGS[@]}")
+        ;;
+    *)
+        echo "taboom-browser: invalid TABOOM_BROWSER_ENGINE '${TABOOM_BROWSER_ENGINE:-unset}' in run/env" >&2
+        exit 1
+        ;;
+esac
+mkdir -p "$profile/Default" "$home/logs"
+
+# Serialize stale-process cleanup, socket removal, and Chrome launch. A second invocation checks
+# again after taking the lock, so it focuses the new healthy window instead of killing it.
+exec 9>"$home/run/browser-launch.lock"
+flock -x 9 || { echo "taboom-browser: could not lock browser startup" >&2; exit 1; }
+
+if taboomd browser-check >/dev/null 2>&1; then
+    swaymsg -q '[app_id="^google-chrome"] focus' 2>/dev/null || true
+    flock -u 9
     exit 0
 fi
-home="${TABOOM_HOME:-$HOME/.taboom}"
-persona=$(cat "$home/run/active-persona" 2>/dev/null)
-[[ "$persona" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || persona=default
-profile="$home/profiles/$persona"
-mkdir -p "$profile/Default" "$home/logs"
-# a live Chrome must keep its locks and state; only a dead one leaves stale ones behind
-if ! pgrep -x chrome >/dev/null; then
-    rm -f "$profile"/Singleton{Lock,Socket,Cookie}
-    # a killed container leaves exit_type Crashed, which brings up a restore bubble
-    sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/; s/"exited_cleanly":false/"exited_cleanly":true/' \
-        "$profile/Default/Preferences" 2>/dev/null
+
+if pgrep -x chrome >/dev/null; then
+    echo "taboom-browser: the private pipe owner is gone; replacing the stale browser process" >&2
+    pkill -TERM -x chrome 2>/dev/null || true
+    for _ in $(seq 1 20); do
+        pgrep -x chrome >/dev/null || break
+        sleep 0.25
+    done
+    if pgrep -x chrome >/dev/null; then
+        pkill -KILL -x chrome 2>/dev/null || true
+        sleep 0.25
+    fi
+    if pgrep -x chrome >/dev/null; then
+        flock -u 9
+        echo "taboom-browser: could not stop stale Chrome processes" >&2
+        exit 1
+    fi
 fi
-if [ ! -e "$profile/First Run" ]; then
-    touch "$profile/First Run"
-    [ -e "$profile/Default/Preferences" ] ||
-        echo '{"session":{"restore_on_startup":1}}' >"$profile/Default/Preferences"
+
+# No Chrome owns these paths now. Clear its stale profile locks and any dead pipe socket.
+rm -f "$profile"/Singleton{Lock,Socket,Cookie} "$home/run/browser-cdp.sock"
+# A killed container leaves exit_type Crashed, which brings up a restore bubble.
+sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/; s/"exited_cleanly":false/"exited_cleanly":true/' \
+    "$profile/Default/Preferences" 2>/dev/null
+[ -e "$profile/First Run" ] || touch "$profile/First Run"
+
+taboomd browser "${browser_flags[@]}" 9>&- &
+browser_pid=$!
+ready=0
+for _ in $(seq 1 40); do
+    if taboomd browser-check >/dev/null 2>&1; then
+        ready=1
+        break
+    fi
+    if ! kill -0 "$browser_pid" 2>/dev/null; then
+        wait "$browser_pid"
+        status=$?
+        flock -u 9
+        exit "$status"
+    fi
+    sleep 0.25
+done
+if [ "$ready" -eq 0 ]; then
+    echo "taboom-browser: the browser's private pipe did not become healthy" >&2
+    kill -TERM "$browser_pid" 2>/dev/null || true
+    wait "$browser_pid"
+    status=$?
+    flock -u 9
+    exit "$status"
 fi
-exec google-chrome-stable --ozone-platform=wayland --user-data-dir="$profile" "$@" \
-    >>"$home/logs/chrome.log" 2>&1
+flock -u 9
+wait "$browser_pid"
