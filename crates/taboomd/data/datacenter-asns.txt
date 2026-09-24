@@ -1,0 +1,25 @@
+# Autonomous systems of hosting and cloud providers. An exit IP in one of these is refused
+# for proxy routes unless the persona sets route.allow_datacenter = true.
+# One ASN per line; text after # is a comment.
+14618   # Amazon AWS
+16509   # Amazon AWS
+15169   # Google
+396982  # Google Cloud
+8075    # Microsoft Azure
+13335   # Cloudflare
+20473   # Vultr (Choopa)
+63949   # Linode (Akamai)
+24940   # Hetzner
+16276   # OVH
+8987    # Amazon AWS (EU)
+8068    # Microsoft
+8069    # Microsoft
+31898   # Oracle Cloud
+45102   # Alibaba Cloud
+14061   # DigitalOcean
+51167   # Contabo
+12876   # Scaleway
+60781   # Leaseweb NL
+28753   # Leaseweb DE
+9009    # M247
+20940   # Akamai

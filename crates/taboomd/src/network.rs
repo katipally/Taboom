@@ -2,8 +2,10 @@ use maxminddb::Reader;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::path::Path;
-use crate::persona::RouteConfig;
-use tracing::{info, warn};
+use crate::persona::Persona;
+use std::collections::HashSet;
+use std::sync::OnceLock;
+use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeoInfo {
@@ -82,114 +84,65 @@ impl GeoLookup {
         }
     }
 
-    pub fn available(&self) -> bool {
-        self.country_reader.is_some() || self.asn_reader.is_some()
+    /// (country database, ASN database) loaded.
+    pub fn databases(&self) -> (bool, bool) {
+        (self.country_reader.is_some(), self.asn_reader.is_some())
     }
 }
 
-const DATACENTER_ASNS: &[u32] = &[
-    14618, 16509, 15169, 8075, 396982, // AWS, GCP, Azure, Oracle
-    13335, 20473, 63949, 24940, 16276, // Cloudflare, Vultr, Linode, Hetzner, OVH
-];
+/// Hosting and cloud ASNs, from `data/datacenter-asns.txt`.
+fn datacenter_asns() -> &'static HashSet<u32> {
+    static SET: OnceLock<HashSet<u32>> = OnceLock::new();
+    SET.get_or_init(|| {
+        include_str!("../data/datacenter-asns.txt")
+            .lines()
+            .filter_map(|l| l.split('#').next()?.trim().parse().ok())
+            .collect()
+    })
+}
 
 pub fn check_datacenter_asn(asn: Option<u32>) -> bool {
-    asn.map(|a| DATACENTER_ASNS.contains(&a)).unwrap_or(false)
+    asn.is_some_and(|a| datacenter_asns().contains(&a))
 }
 
-pub struct RouteChecker {
-    geo: GeoLookup,
-}
+pub const GEOLITE_REQUIRED: &str =
+    "a proxy route needs GeoLite2-Country.mmdb and GeoLite2-ASN.mmdb in the data volume";
 
-impl RouteChecker {
-    pub fn new(geo: GeoLookup) -> Self {
-        Self { geo }
+/// Whether the exit IP fits the persona. Proxy routes fail closed: both GeoLite2 databases are
+/// required, the exit country must be the persona's and a datacenter ASN is refused unless
+/// allowed. Direct routes only check the country, and only when the database is there.
+pub fn judge_exit(exit: &GeoInfo, dbs: (bool, bool), persona: &Persona) -> Result<(), String> {
+    let proxy = persona.route.proxy();
+    if proxy.is_some() && !(dbs.0 && dbs.1) {
+        return Err(GEOLITE_REQUIRED.into());
     }
-
-    pub fn geo_available(&self) -> bool {
-        self.geo.available()
-    }
-
-    pub fn validate_at_creation(
-        &self,
-        route: &RouteConfig,
-        _timezone: &str,
-    ) -> Vec<String> {
-        let mut warnings = Vec::new();
-
-        match route {
-            RouteConfig::Direct => {
-                warn!("persona using direct route; datacenter detection possible in cloud");
-                warnings.push("direct route: datacenter IP detection possible if running in cloud".into());
-            }
-            RouteConfig::Proxy { address, port, .. } => {
-                if let Ok(ip) = address.parse::<IpAddr>() {
-                    let geo = self.geo.lookup(ip);
-                    if check_datacenter_asn(geo.asn) {
-                        warnings.push(format!(
-                            "proxy {address}:{port} resolves to datacenter ASN {}",
-                            geo.asn.unwrap_or(0)
-                        ));
-                    }
-                }
-            }
+    match (&exit.country, proxy) {
+        (Some(c), _) if *c != persona.country => {
+            return Err(format!("exit IP {} is in {c}, but the persona's country is {}", exit.ip, persona.country));
         }
-
-        warnings
+        (None, Some(_)) => return Err(format!("exit IP {} has no country in GeoLite2", exit.ip)),
+        _ => {}
     }
-
-    pub fn check_exit_geo(&self, ip: IpAddr, expected_tz: &str) -> RouteHealthResult {
-        let geo = self.geo.lookup(ip);
-
-        let tz_mismatch = match (&geo.country, expected_tz) {
-            (Some(country), tz) => !timezone_matches_country(tz, country),
-            _ => false,
+    if let Some(proxy) = proxy {
+        let Some(asn) = exit.asn else {
+            return Err(format!("exit IP {} has no ASN in GeoLite2", exit.ip));
         };
-
-        if tz_mismatch {
-            warn!(
-                exit_ip = %ip,
-                country = ?geo.country,
-                expected_tz = expected_tz,
-                "exit geo does not match persona timezone"
-            );
-        }
-
-        let is_datacenter = check_datacenter_asn(geo.asn);
-
-        RouteHealthResult {
-            geo,
-            tz_mismatch,
-            is_datacenter,
+        if !proxy.allow_datacenter && check_datacenter_asn(Some(asn)) {
+            return Err(format!(
+                "exit IP {} is in datacenter AS{asn} ({}); set route.allow_datacenter = true to accept it",
+                exit.ip,
+                exit.asn_org.as_deref().unwrap_or("unknown")
+            ));
         }
     }
-}
-
-pub struct RouteHealthResult {
-    pub geo: GeoInfo,
-    pub tz_mismatch: bool,
-    pub is_datacenter: bool,
-}
-
-fn timezone_matches_country(tz: &str, country_code: &str) -> bool {
-    let prefix = match country_code {
-        "US" => &["America/"][..],
-        "GB" => &["Europe/London"],
-        "DE" => &["Europe/Berlin"],
-        "FR" => &["Europe/Paris"],
-        "JP" => &["Asia/Tokyo"],
-        "AU" => &["Australia/"],
-        "CA" => &["America/"],
-        "IN" => &["Asia/Kolkata", "Asia/Calcutta"],
-        "BR" => &["America/Sao_Paulo", "America/Fortaleza", "America/Manaus"],
-        _ => return true,
-    };
-
-    prefix.iter().any(|p| tz.starts_with(p))
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persona::{tests::ZONE_TAB, Persona, Proxy, Route};
+    use taboom_core::timezone_matches_country;
 
     #[test]
     fn datacenter_asn_detected() {
@@ -200,10 +153,36 @@ mod tests {
 
     #[test]
     fn timezone_country_match() {
-        assert!(timezone_matches_country("America/New_York", "US"));
-        assert!(!timezone_matches_country("Europe/London", "US"));
-        assert!(timezone_matches_country("Europe/London", "GB"));
-        assert!(timezone_matches_country("Asia/Tokyo", "JP"));
-        assert!(timezone_matches_country("Anything/Goes", "ZZ"));
+        assert!(timezone_matches_country(ZONE_TAB, "America/New_York", "US"));
+        assert!(timezone_matches_country(ZONE_TAB, "America/Los_Angeles", "US"));
+        assert!(!timezone_matches_country(ZONE_TAB, "Europe/London", "US"));
+        assert!(timezone_matches_country(ZONE_TAB, "Europe/Berlin", "DE"));
+        assert!(!timezone_matches_country(ZONE_TAB, "Anything/Goes", "ZZ"), "unknown is a mismatch, not a pass");
+    }
+
+    fn exit(country: Option<&str>, asn: u32) -> GeoInfo {
+        GeoInfo { ip: "203.0.113.7".parse().unwrap(), country: country.map(str::to_string), asn: Some(asn), asn_org: None }
+    }
+
+    #[test]
+    fn proxy_exit_fails_closed() {
+        let mut p = Persona::parse("name = \"a\"\ncountry = \"DE\"").unwrap();
+        let de = exit(Some("DE"), 3320);
+        assert!(judge_exit(&de, (true, true), &p).is_ok(), "direct route");
+        assert!(judge_exit(&exit(Some("US"), 3320), (true, true), &p).is_err(), "direct but wrong country");
+        assert!(judge_exit(&exit(None, 0), (false, false), &p).is_ok(), "direct works without GeoLite");
+
+        p.route = Route::Socks5(Proxy { url: "h:1".into(), auth: None, allow_datacenter: false });
+        assert!(judge_exit(&de, (true, true), &p).is_ok());
+        assert!(judge_exit(&de, (true, false), &p).unwrap_err().contains("GeoLite2"));
+        assert!(judge_exit(&exit(None, 3320), (true, true), &p).is_err());
+        let mut no_asn = de.clone();
+        no_asn.asn = None;
+        assert!(judge_exit(&no_asn, (true, true), &p).unwrap_err().contains("no ASN"));
+        assert!(judge_exit(&exit(Some("NL"), 3320), (true, true), &p).unwrap_err().contains("NL"));
+        assert!(judge_exit(&exit(Some("DE"), 24940), (true, true), &p).unwrap_err().contains("datacenter"));
+        p.route = Route::Socks5(Proxy { url: "h:1".into(), auth: None, allow_datacenter: true });
+        assert!(judge_exit(&exit(Some("DE"), 24940), (true, true), &p).is_ok());
+        assert!(judge_exit(&no_asn, (true, true), &p).unwrap_err().contains("no ASN"));
     }
 }
