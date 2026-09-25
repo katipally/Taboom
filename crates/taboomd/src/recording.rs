@@ -1,4 +1,3 @@
-use crate::liveview;
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use rand::RngCore;
@@ -15,6 +14,8 @@ pub struct Recorder {
     dir: PathBuf,
     key: Vec<u8>,
     public_url: String,
+    /// TABOOM_RECORDINGS_MAX_GB; unset keeps everything.
+    max_bytes: Option<u64>,
     active: Mutex<HashMap<String, Active>>,
 }
 
@@ -83,13 +84,22 @@ impl Recorder {
                 k
             }
         };
-        Ok(Self { dir, key, public_url, active: Mutex::new(HashMap::new()) })
+        let max_bytes = std::env::var("TABOOM_RECORDINGS_MAX_GB")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|gb| gb.is_finite() && *gb > 0.0)
+            .map(|gb| (gb * 1e9) as u64);
+        Ok(Self { dir, key, public_url, max_bytes, active: Mutex::new(HashMap::new()) })
     }
 
     pub fn start(&self, client: &str, persona: &str) -> Result<String> {
         let mut active = self.active.lock().unwrap();
         if let Some(a) = active.get(client) {
             return Ok(a.id.clone());
+        }
+        if let Some(max) = self.max_bytes {
+            let live: Vec<&str> = active.values().map(|a| a.id.as_str()).collect();
+            self.prune(max, &live);
         }
         let now = Utc::now();
         let short = uuid::Uuid::new_v4().simple().to_string();
@@ -192,6 +202,39 @@ impl Recorder {
             .collect()
     }
 
+    /// Deletes the oldest sessions, never a live one, until the folder fits in `max` bytes.
+    /// O(files) to size every session, O(n log n) to order them.
+    fn prune(&self, max: u64, live: &[&str]) {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
+        let mut sessions: Vec<(Meta, u64)> = entries
+            .flatten()
+            .filter_map(|e| self.meta(&e.file_name().to_string_lossy()).ok())
+            .map(|m| {
+                let bytes = dir_bytes(&self.dir.join(&m.id));
+                (m, bytes)
+            })
+            .collect();
+        let mut total: u64 = sessions.iter().map(|(_, b)| b).sum();
+        sessions.sort_by_key(|(meta, _)| meta.started_at);
+        for (meta, bytes) in sessions {
+            if total <= max {
+                break;
+            }
+            if live.contains(&meta.id.as_str()) {
+                continue;
+            }
+            match std::fs::remove_dir_all(self.dir.join(&meta.id)) {
+                Ok(()) => {
+                    total -= bytes;
+                    tracing::info!(id = %meta.id, bytes, "recording deleted by retention");
+                }
+                Err(e) => tracing::warn!(id = %meta.id, "recording retention could not delete: {e}"),
+            }
+        }
+    }
+
     fn count_events(&self, id: &str) -> usize {
         self.session_dir(id)
             .and_then(|d| Ok(File::open(d.join("events.jsonl"))?))
@@ -228,7 +271,7 @@ impl Recorder {
     pub fn share_url(&self, id: &str, ttl_s: u64) -> Result<(String, Option<String>)> {
         self.session_dir(id)?;
         let exp = unix_now() + ttl_s;
-        let sig = liveview::sign_url(id, &self.key, exp);
+        let sig = sign_url(id, &self.key, exp);
         let base = format!("{}/recordings/{id}", self.public_url.trim_end_matches('/'));
         let video = self.video(id).map(|v| format!("{base}/video/{}?exp={exp}&sig={sig}", v.file));
         Ok((format!("{base}?exp={exp}&sig={sig}"), video))
@@ -252,7 +295,7 @@ impl Recorder {
     }
 
     pub fn verify(&self, id: &str, exp: u64, sig: &str) -> bool {
-        exp >= unix_now() && liveview::verify_token(id, &self.key, exp, sig)
+        exp >= unix_now() && verify_token(id, &self.key, exp, sig)
     }
 
     fn session_dir(&self, id: &str) -> Result<PathBuf> {
@@ -261,6 +304,17 @@ impl Recorder {
         }
         Ok(self.dir.join(id))
     }
+}
+
+fn dir_bytes(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter_map(|e| Some((e.path(), e.metadata().ok()?)))
+        .map(|(path, meta)| if meta.is_dir() { dir_bytes(&path) } else { meta.len() })
+        .sum()
 }
 
 fn safe_name(s: &str) -> bool {
@@ -276,6 +330,32 @@ fn slug(s: &str) -> String {
         .take(32)
         .collect();
     if slug.is_empty() { "persona".into() } else { slug }
+}
+
+fn sign_url(recording_id: &str, secret: &[u8], expires_at: u64) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let message = format!("{recording_id}:{expires_at}");
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key length");
+    mac.update(message.as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
+fn verify_token(recording_id: &str, secret: &[u8], expires_at: u64, token: &str) -> bool {
+    let expected = sign_url(recording_id, secret, expires_at);
+    constant_time_eq(expected.as_bytes(), token.as_bytes())
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 fn unix_now() -> u64 {
@@ -380,6 +460,15 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn signed_urls_bind_recording_and_expiry() {
+        let secret = b"test-secret-key-32bytes-long!!!!";
+        let token = sign_url("recording-1", secret, 1_700_000_000);
+        assert!(verify_token("recording-1", secret, 1_700_000_000, &token));
+        assert!(!verify_token("recording-2", secret, 1_700_000_000, &token));
+        assert!(!verify_token("recording-1", secret, 1_700_000_001, &token));
+    }
+
+    #[test]
     fn records_pages_and_shares() {
         let tmp = tempfile::tempdir().unwrap();
         let rec = Recorder::open(tmp.path(), "http://localhost:3456".into()).unwrap();
@@ -412,6 +501,25 @@ mod tests {
         assert!(rec.verify(&id, q["exp"].parse().unwrap(), q["sig"]));
         assert!(!rec.verify(&id, q["exp"].parse::<u64>().unwrap() + 1, q["sig"]));
         assert!(!rec.verify(&id, 1, q["sig"]), "expired links fail");
+    }
+
+    #[test]
+    fn retention_deletes_oldest_but_never_live() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rec = Recorder::open(tmp.path(), "http://x".into()).unwrap();
+        let mut ids = vec![];
+        for client in ["a", "b", "c"] {
+            let id = rec.start(client, "p").unwrap();
+            std::fs::write(rec.session_path(&id).unwrap().join("video.mp4"), vec![0u8; 1000]).unwrap();
+            ids.push(id);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        rec.stop("b");
+        rec.stop("c");
+        rec.prune(2600, &[ids[0].as_str()]);
+        assert!(rec.meta(&ids[0]).is_ok(), "live session kept even though it is oldest");
+        assert!(rec.meta(&ids[1]).is_err(), "oldest finished session deleted");
+        assert!(rec.meta(&ids[2]).is_ok(), "stops once under the limit");
     }
 
     #[test]
