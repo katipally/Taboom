@@ -1,23 +1,27 @@
-mod config;
 mod audit;
+mod browser;
+mod boot;
+mod cdp;
 mod consistency;
 mod handler;
-mod handoff;
 mod hardware;
+mod ipc;
+mod lease;
 mod liveview;
 mod local;
 mod mcp;
 mod network;
 mod persona;
-mod lease;
-mod ipc;
 mod recording;
+mod route;
 mod tools;
 mod totp;
 mod vault;
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::signal;
 use tracing::{info, warn};
 
@@ -30,144 +34,160 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let config = config::DaemonConfig::load()?;
-    info!(home = %config.home.display(), "taboomd starting");
+    let env = DaemonEnv::from_process();
+    env.ensure_dirs()?;
+    match std::env::args().nth(1).as_deref() {
+        Some("boot-check") => boot::boot_check(&env.home, &env.persona).await,
+        Some("browser") => {
+            let profile = std::env::var_os("TABOOM_PROFILE")
+                .map(PathBuf::from)
+                .context("TABOOM_PROFILE was not set by boot-check")?;
+            let engine = std::env::var("TABOOM_BROWSER_ENGINE")
+                .context("TABOOM_BROWSER_ENGINE was not set by boot-check")?;
+            let engine = browser::parse_engine(&engine)?;
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            browser::launch(&env.home, &profile, engine, &args)
+        }
+        Some("browser-check") => browser::check(&env.home),
+        Some("serve") | None => serve(env).await,
+        Some(other) => bail!("unknown command {other:?}; use boot-check or serve"),
+    }
+}
 
-    config.ensure_dirs()?;
+async fn serve(env: DaemonEnv) -> Result<()> {
+    info!(home = %env.home.display(), persona = %env.persona, "taboomd starting");
 
     let audit_log = Arc::new(audit::AuditLog::open(
-        &config.home.join("audit").join("taboomd.jsonl"),
+        &env.home.join("audit").join("taboomd.jsonl"),
     )?);
     audit_log.log("daemon_start", "taboomd starting up")?;
 
-    let personas = Arc::new(persona::PersonaRegistry::load(&config.home)?);
-    info!(count = personas.count(), "loaded personas");
+    // boot-check created and validated it moments ago; serving never invents a persona
+    let path = env.home.join("personas").join(format!("{}.toml", env.persona));
+    let text = std::fs::read_to_string(&path).with_context(|| format!("reading {} (run boot-check first)", path.display()))?;
+    let persona = Arc::new(persona::Persona::parse(&text).with_context(|| format!("parsing {}", path.display()))?);
 
-    validate_personas(&personas);
+    let upstream = route::Upstream::resolve(&persona, &env.home)?;
+    let monitor = Arc::new(route::Monitor::new(
+        Arc::clone(&persona),
+        upstream,
+        network::GeoLookup::open(&env.home),
+    ));
+    // The entrypoint launches Chrome only after serve is up, so failing here keeps it closed.
+    let first = monitor.recheck().await;
+    if !first.ok {
+        bail!("route check failed at startup: {}", first.detail);
+    }
+    let every = std::env::var("TABOOM_ROUTE_RECHECK_S")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(300u64)
+        .max(30);
+    Arc::clone(&monitor).run(Duration::from_secs(every)).await?;
+    info!(every_s = every, "route monitor started");
 
-    let geo = network::GeoLookup::open(&config.home);
-    let route_checker = Arc::new(network::RouteChecker::new(geo));
-    validate_routes(&personas, &route_checker);
-    info!("route checker initialized");
+    let local = local::LocalExecutor::new();
+    let (probe, declared) = (local.clone(), Arc::clone(&persona));
+    std::thread::spawn(move || {
+        // The entrypoint starts Chrome after serve is up, and the check reads Chrome's process.
+        for _ in 0..120 {
+            if consistency::browser_running() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        let report = consistency::check_applied(&declared, &consistency::observe(probe.output().ok(), &declared));
+        if report.all_passed() {
+            info!("persona applied as declared");
+        }
+        for c in report.checks.iter().filter(|c| !c.passed) {
+            warn!(check = %c.name, detail = %c.detail, "persona not applied as declared");
+        }
+    });
 
-    let lease_mgr = lease::LeaseManager::new();
-
-    let vault = Arc::new(vault::Vault::open(&config.home));
+    let vault = Arc::new(vault::Vault::open(&env.home));
     info!(status = vault.status(), "vault initialized");
-
-    let notify_spec = std::env::var("TABOOM_NOTIFY").unwrap_or_default();
-    let notify_config = if notify_spec.is_empty() {
-        handoff::HandoffNotifyConfig::default()
-    } else {
-        handoff::parse_notify_config(&notify_spec)
-    };
-    let handoff_mgr = handoff::HandoffManager::new(
-        liveview::takeover_url(),
-        notify_config,
-    );
 
     let mcp_config = mcp::McpConfig::default();
     let public_url = std::env::var("TABOOM_PUBLIC_URL")
         .unwrap_or_else(|_| format!("http://localhost:{}", mcp_config.port));
-    let recorder = Arc::new(recording::Recorder::open(&config.home, public_url)?);
+    let recorder = Arc::new(recording::Recorder::open(&env.home, public_url)?);
 
-    let handler = Arc::new(handler::ToolHandler::new(
-        lease_mgr,
-        handoff_mgr,
-        Arc::clone(&personas),
-        recorder,
-    ));
+    let handler = Arc::new(
+        handler::ToolHandler::new(persona, monitor, recorder, local).with_secret_context(
+            Arc::clone(&vault),
+            Arc::clone(&audit_log),
+            Arc::new(cdp::CdpPageTargets::new(&env.home)),
+            &env.home,
+        )?,
+    );
 
-    let mcp_handle = mcp::start_server(mcp_config, handler).await?;
+    let mcp_handle = mcp::start_server(mcp_config, Arc::clone(&handler), Arc::clone(&audit_log), &env.home).await?;
     info!("MCP server started");
 
     let ipc_handle = ipc::start_listener(
-        &config,
+        &env.home,
         Arc::clone(&vault),
-        Arc::clone(&personas),
         Arc::clone(&audit_log),
     )
     .await?;
     info!("IPC listener started");
 
     info!("taboomd ready, waiting for shutdown signal");
-    signal::ctrl_c().await?;
+    // `docker stop` sends SIGTERM; Ctrl+C in a foreground run sends SIGINT
+    let mut term = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        r = signal::ctrl_c() => r?,
+        _ = term.recv() => {}
+    }
     info!("shutdown signal received");
 
     mcp_handle.abort();
     ipc_handle.abort();
+    let session = Arc::clone(&handler);
+    if let Err(e) = tokio::task::spawn_blocking(move || session.shutdown()).await {
+        warn!("session cleanup at shutdown failed: {e}");
+    }
 
     audit_log.log("daemon_stop", "taboomd shutting down")?;
-    cleanup_socket(&config);
+    cleanup_socket(&env.home);
 
     drop(vault);
-    drop(route_checker);
-    drop(personas);
     info!("taboomd stopped");
     Ok(())
 }
 
-fn validate_personas(personas: &persona::PersonaRegistry) {
-    for p in &personas.list() {
-        let report = consistency::check_persona(p);
-        if !report.all_passed() {
-            for c in &report.checks {
-                if !c.passed {
-                    warn!(
-                        persona = %p.name,
-                        check = %c.name,
-                        detail = %c.detail,
-                        "consistency check failed"
-                    );
-                }
-            }
-        }
-    }
-
-    let all = personas.list();
-    for i in 0..all.len() {
-        for j in (i + 1)..all.len() {
-            let check = consistency::check_pair_distinct(&all[i], &all[j]);
-            if !check.passed {
-                warn!(check = %check.name, detail = %check.detail, "pair distinctness failed");
-            }
-        }
-    }
-}
-
-fn validate_routes(
-    personas: &persona::PersonaRegistry,
-    route_checker: &network::RouteChecker,
-) {
-    if !route_checker.geo_available() {
-        info!("GeoIP databases not available, skipping exit geo checks");
-    }
-
-    for p in personas.list() {
-        let warnings = route_checker.validate_at_creation(&p.route, &p.timezone);
-        for w in warnings {
-            warn!(persona = %p.name, "{w}");
-        }
-
-        if let persona::RouteConfig::Proxy { address, .. } = &p.route {
-            if let Ok(ip) = address.parse::<std::net::IpAddr>() {
-                let health = route_checker.check_exit_geo(ip, &p.timezone);
-                if health.tz_mismatch {
-                    warn!(
-                        persona = %p.name,
-                        country = ?health.geo.country,
-                        "exit geo does not match persona timezone"
-                    );
-                }
-                if health.is_datacenter {
-                    warn!(persona = %p.name, "exit IP belongs to a datacenter ASN");
-                }
-            }
-        }
-    }
-}
-
-fn cleanup_socket(config: &config::DaemonConfig) {
-    let sock = config.home.join("run").join("taboomd.sock");
+fn cleanup_socket(home: &Path) {
+    let sock = home.join("run").join("taboomd.sock");
     let _ = std::fs::remove_file(sock);
+}
+
+struct DaemonEnv {
+    home: PathBuf,
+    /// TABOOM_PERSONA, default "default": the one persona this container runs.
+    persona: String,
+}
+
+impl DaemonEnv {
+    fn from_process() -> Self {
+        let home = std::env::var("TABOOM_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                let home = std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("."));
+                home.join(".taboom")
+            });
+        let persona = std::env::var("TABOOM_PERSONA").ok().filter(|p| !p.is_empty()).unwrap_or_else(|| "default".into());
+        Self { home, persona }
+    }
+
+    fn ensure_dirs(&self) -> Result<()> {
+        for sub in ["personas", "run", "audit", "logs", "vault"] {
+            let dir = self.home.join(sub);
+            std::fs::create_dir_all(&dir)
+                .with_context(|| format!("creating {}", dir.display()))?;
+        }
+        Ok(())
+    }
 }

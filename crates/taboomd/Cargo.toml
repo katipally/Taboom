@@ -21,6 +21,7 @@ uuid = { workspace = true }
 maxminddb = { workspace = true }
 rand = { workspace = true }
 hmac = { workspace = true }
+libc = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 sha1 = { workspace = true }
@@ -28,6 +29,7 @@ data-encoding = { workspace = true }
 age = { workspace = true }
 ciborium = { workspace = true }
 taboom-humanizer = { path = "../taboom-humanizer" }
+taboom-core = { path = "../taboom-core" }
 nix = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["fs"] }
