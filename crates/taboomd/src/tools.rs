@@ -91,6 +91,17 @@ pub enum ToolCall {
         ms: Option<u64>,
         #[serde(default)]
         until_settled: Option<bool>,
+        #[serde(default)]
+        until_text: Option<String>,
+    },
+    FindText {
+        text: String,
+        #[serde(default)]
+        region: Option<ToolRegion>,
+    },
+    ReadText {
+        #[serde(default)]
+        region: Option<ToolRegion>,
     },
     OpenUrl {
         url: String,
@@ -107,38 +118,9 @@ pub enum ToolCall {
     ClipboardSet {
         text: String,
     },
-    HandoffStart {
-        reason: String,
-    },
-    HandoffWait {
-        id: String,
-        #[serde(default)]
-        timeout_s: Option<u64>,
-    },
-    HandoffResolve {
-        id: String,
-        #[serde(default = "default_resolve_action")]
-        action: String,
-    },
-    PersonaList,
-    PersonaAcquire {
-        id: String,
-    },
-    PersonaRelease,
+    SessionStart,
+    SessionEnd,
     PersonaStatus,
-    PersonaCreate {
-        name: String,
-        #[serde(default)]
-        timezone: Option<String>,
-        #[serde(default)]
-        locale: Option<String>,
-        #[serde(default)]
-        keyboard_layout: Option<String>,
-        #[serde(default)]
-        languages: Option<Vec<String>>,
-        #[serde(default)]
-        accept_languages: Option<String>,
-    },
     ViewUrl,
     RecordingList {
         #[serde(default)]
@@ -213,10 +195,6 @@ fn default_count() -> u32 {
 fn default_mode() -> String {
     "auto".into()
 }
-fn default_resolve_action() -> String {
-    "done".into()
-}
-
 pub fn translate_computer_tool(call: &ToolCall) -> Option<ToolCall> {
     match call {
         ToolCall::Computer {
@@ -342,6 +320,7 @@ pub fn translate_computer_tool(call: &ToolCall) -> Option<ToolCall> {
                 "wait" => Some(ToolCall::Wait {
                     ms: Some((extra.duration.unwrap_or(1.0) * 1000.0) as u64),
                     until_settled: None,
+                    until_text: None,
                 }),
                 "zoom" => {
                     let r = extra.region.as_ref().filter(|r| r.len() == 4)?;
@@ -376,7 +355,7 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "screenshot".into(),
-            description: "Capture the screen. The image is scaled so its longest edge is at most max_edge (default 1280). All x/y you pass to click, move, drag, scroll and zoom are in the pixel space of the latest full screenshot; Taboom maps them to the real screen. A region screenshot is for looking only and does not change that space.".into(),
+            description: "Capture the screen. The image is scaled so its longest edge is at most max_edge (default 1280). All x/y you pass to click, move, drag, scroll and zoom are in the pixel space of the latest full screenshot; Taboom maps them to the real screen. A region screenshot is for looking only and does not change that space. After vault secret typing, screenshots stay disabled for the persistent data volume.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -397,7 +376,7 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "zoom".into(),
-            description: "Crop a region (in latest-screenshot coordinates) and return it at full native resolution, to read small text".into(),
+            description: "Crop a region (in latest-screenshot coordinates) and return it at full native resolution, to read small text. Disabled after vault secret typing for the rest of the persistent data volume.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -413,6 +392,46 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
                     }
                 },
                 "required": ["region"]
+            }),
+        },
+        ToolDef {
+            name: "find_text".into(),
+            description: "Find visible text with local OCR. Returns matching OCR lines and their boxes in the latest full screenshot's pixel space. An optional region uses those same coordinates. Disabled after vault secret typing for the rest of the persistent data volume.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string", "description": "Case-insensitive text or phrase to find" },
+                    "region": {
+                        "type": "object",
+                        "properties": {
+                            "x": { "type": "number" },
+                            "y": { "type": "number" },
+                            "w": { "type": "number" },
+                            "h": { "type": "number" }
+                        },
+                        "required": ["x", "y", "w", "h"]
+                    }
+                },
+                "required": ["text"]
+            }),
+        },
+        ToolDef {
+            name: "read_text".into(),
+            description: "Read visible text with local OCR. Returns lines and their boxes in the latest full screenshot's pixel space. An optional region uses those same coordinates. Disabled after vault secret typing for the rest of the persistent data volume.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "region": {
+                        "type": "object",
+                        "properties": {
+                            "x": { "type": "number" },
+                            "y": { "type": "number" },
+                            "w": { "type": "number" },
+                            "h": { "type": "number" }
+                        },
+                        "required": ["x", "y", "w", "h"]
+                    }
+                }
             }),
         },
         ToolDef {
@@ -486,7 +505,7 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "type".into(),
-            description: "Type text into the focused element. mode: keys (real key presses), paste (clipboard + ctrl+v), auto (paste only for very long text). submit presses Enter after".into(),
+            description: "Type text into the focused element. mode: keys (real key presses), paste (clipboard + ctrl+v), auto (paste only for very long text). `<secret>NAME</secret>` resolves an unlocked, domain-allowed vault item and types it through the layout-aware keymap with no typo planner or clipboard. It requires a focused, non-fullscreen Chrome window and a healthy route. The private Chrome pipe runs Target.getTargets only and never attaches to a page; local OCR must read a confident hostname from the visible omnibox that matches an HTTPS page-host candidate. HTTP pages are refused, and a hidden scheme with same-host HTTP and HTTPS candidates is ambiguous and refused. Taboom cannot verify that the HTML input rather than the address bar has focus; click the intended page field and keep the page stable. After secret typing, screen images and video are disabled for the persistent data volume. `submit` presses Enter after typing; secret calls refuse paste mode.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -562,12 +581,13 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "wait".into(),
-            description: "Wait ms milliseconds, or with until_settled wait until the screen stops changing (ms is then the cap, default 3000)".into(),
+            description: "Wait ms milliseconds, until the screen stops changing, or until local OCR finds until_text. For until_settled and until_text, ms is the cap (default 3000). Screen OCR is disabled after vault secret typing for the rest of the persistent data volume.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "ms": { "type": "number", "description": "0-60000" },
-                    "until_settled": { "type": "boolean" }
+                    "until_settled": { "type": "boolean" },
+                    "until_text": { "type": "string", "description": "Wait until this visible text appears; case-insensitive" }
                 }
             }),
         },
@@ -627,90 +647,28 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
-            name: "handoff_start".into(),
-            description: "Start a handoff to a human operator".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "reason": { "type": "string" }
-                },
-                "required": ["reason"]
-            }),
-        },
-        ToolDef {
-            name: "handoff_wait".into(),
-            description: "Wait for a handoff to complete".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string" },
-                    "timeout_s": { "type": "number" }
-                },
-                "required": ["id"]
-            }),
-        },
-        ToolDef {
-            name: "handoff_resolve".into(),
-            description: "Resolve a handoff session as done or aborted".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string" },
-                    "action": { "type": "string", "enum": ["done", "abort"] }
-                },
-                "required": ["id"]
-            }),
-        },
-        ToolDef {
-            name: "persona_list".into(),
-            description: "List available personas".into(),
+            name: "session_start".into(),
+            description: "Start a session on this container's desktop: leases it to you alone, starts the recording and loads the persona's keyboard layout. Refused while another agent holds it or the route check is failing".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolDef {
-            name: "persona_acquire".into(),
-            description: "Acquire a lease on a persona. The desktop runs one persona at a time; when its Chrome profile is not the one open, the browser quits (session saved) and reopens on it".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string" }
-                },
-                "required": ["id"]
-            }),
-        },
-        ToolDef {
-            name: "persona_release".into(),
-            description: "Release the current persona lease".into(),
+            name: "session_end".into(),
+            description: "End your session: releases held keys and buttons, stops the recording and frees the desktop".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
-        },
-        ToolDef {
-            name: "persona_create".into(),
-            description: "Create a new persona (saved as personas/<name>.toml, usable at once, no lease needed). It gets its own empty Chrome profile the first time it is acquired. Unset fields take the default persona's values".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string", "description": "1-64 characters of A-Z, a-z, 0-9, _ or -; must not exist yet" },
-                    "timezone": { "type": "string", "description": "IANA zone, default America/New_York" },
-                    "locale": { "type": "string", "description": "default en_US.UTF-8" },
-                    "keyboard_layout": { "type": "string", "description": "XKB layout, default us" },
-                    "languages": { "type": "array", "items": { "type": "string" }, "description": "default [\"en-US\", \"en\"]" },
-                    "accept_languages": { "type": "string", "description": "Accept-Language list, default: languages joined by commas" }
-                },
-                "required": ["name"]
-            }),
         },
         ToolDef {
             name: "persona_status".into(),
-            description: "Get full status of the current persona".into(),
+            description: "Which persona this container is, its declared vs. applied settings, route health (exit IP, country, ASN) and the current session. Works without a session".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolDef {
             name: "view_url".into(),
-            description: "Get the live view URL for the current persona".into(),
+            description: "Get the live view URL for this container's desktop".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolDef {
             name: "recording_list".into(),
-            description: "List recorded agent sessions, newest first. Every session (persona_acquire to persona_release) records each tool call and a frame after each action".into(),
+            description: "List recorded agent sessions, newest first. Every session (session_start to session_end) records each tool call and a frame after each action".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -937,6 +895,24 @@ mod tests {
         }))
         .unwrap();
         assert!(matches!(translate_computer_tool(&call), Some(ToolCall::Wait { ms: Some(1500), .. })));
+    }
+
+    #[test]
+    fn ocr_and_text_wait_calls_deserialize() {
+        let find: ToolCall = serde_json::from_value(json!({
+            "tool": "find_text",
+            "text": "Continue",
+            "region": { "x": 10, "y": 20, "w": 300, "h": 100 }
+        })).unwrap();
+        assert!(matches!(find, ToolCall::FindText { text, region: Some(_) } if text == "Continue"));
+
+        let read: ToolCall = serde_json::from_value(json!({ "tool": "read_text" })).unwrap();
+        assert!(matches!(read, ToolCall::ReadText { region: None }));
+
+        let wait: ToolCall = serde_json::from_value(json!({
+            "tool": "wait", "until_text": "Page loaded", "ms": 5000
+        })).unwrap();
+        assert!(matches!(wait, ToolCall::Wait { ms: Some(5000), until_text: Some(ref text), .. } if text == "Page loaded"));
     }
 
     #[test]
