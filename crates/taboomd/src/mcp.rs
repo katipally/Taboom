@@ -1,3 +1,4 @@
+use crate::audit::AuditLog;
 use crate::handler::{ToolHandler, ToolResult};
 use crate::recording;
 use crate::tools::{self, ToolCall};
@@ -49,6 +50,8 @@ const SUPPORTED_PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "202
 struct McpState {
     handler: Arc<ToolHandler>,
     tokens: Arc<HashMap<String, String>>,
+    audit: Arc<AuditLog>,
+    home: Arc<std::path::PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -213,6 +216,7 @@ async fn dispatch(
             let call: ToolCall = match serde_json::from_value(call_value) {
                 Ok(c) => c,
                 Err(e) => {
+                    let _ = state.audit.log_tool_call(tool_name, client_id, true);
                     let resp = JsonRpcResponse::error(
                         id,
                         -32602,
@@ -229,6 +233,9 @@ async fn dispatch(
                 Ok(r) => r,
                 Err(e) => ToolResult::err(&format!("tool crashed: {e}")),
             };
+            if let Err(e) = state.audit.log_tool_call(tool_name, client_id, result.is_error) {
+                warn!("audit log write failed: {e}");
+            }
             let content = mcp_content(&result);
             let resp = JsonRpcResponse::success(
                 id,
@@ -334,6 +341,27 @@ async fn replay_video(
     }
 }
 
+/// Probes vinput, sway and Chrome. 200 when all answer, 503 with the failing parts otherwise.
+async fn healthz(State(state): State<McpState>) -> Response {
+    let handler = Arc::clone(&state.handler);
+    let home = Arc::clone(&state.home);
+    let probe = move || {
+        let mut checks = handler.health();
+        checks.push(("chrome", crate::browser::check(&home)));
+        checks
+    };
+    let Ok(checks) = tokio::task::spawn_blocking(probe).await else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let healthy = checks.iter().all(|(_, r)| r.is_ok());
+    let body: serde_json::Map<String, Value> = checks
+        .into_iter()
+        .map(|(name, r)| (name.to_string(), json!(r.map_or_else(|e| format!("{e:#}"), |()| "ok".into()))))
+        .collect();
+    let status = if healthy { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+    (status, axum::Json(Value::Object(body))).into_response()
+}
+
 /// Front page: live view links, how to connect, and (without tokens) recent recordings.
 async fn home(State(state): State<McpState>) -> Response {
     let view = crate::liveview::watch_url();
@@ -375,10 +403,14 @@ async fn home(State(state): State<McpState>) -> Response {
 pub async fn start_server(
     config: McpConfig,
     handler: Arc<ToolHandler>,
+    audit: Arc<AuditLog>,
+    taboom_home: &std::path::Path,
 ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
     let state = McpState {
         handler,
         tokens: Arc::new(config.tokens),
+        audit,
+        home: Arc::new(taboom_home.to_path_buf()),
     };
 
     let app = Router::new()
@@ -386,6 +418,7 @@ pub async fn start_server(
         .route("/recordings/:id", get(replay_page))
         .route("/recordings/:id/frames/:file", get(replay_frame))
         .route("/recordings/:id/video/:file", get(replay_video))
+        .route("/healthz", get(healthz))
         .route("/", get(home))
         .with_state(state);
 
@@ -400,41 +433,6 @@ pub async fn start_server(
     });
 
     Ok(handle)
-}
-
-pub fn generate_mcp_config_json(host: &str, port: u16, token: Option<&str>) -> Value {
-    let mut config = json!({
-        "mcpServers": {
-            "taboom": {
-                "url": format!("http://{host}:{port}/mcp"),
-            }
-        }
-    });
-
-    if let Some(tok) = token {
-        config["mcpServers"]["taboom"]["headers"] = json!({
-            "Authorization": format!("Bearer {tok}")
-        });
-    }
-
-    config
-}
-
-pub fn generate_claude_code_config(host: &str, port: u16, token: Option<&str>) -> Value {
-    let mut server = json!({
-        "type": "http",
-        "url": format!("http://{host}:{port}/mcp"),
-    });
-    if let Some(tok) = token {
-        server["headers"] = json!({
-            "Authorization": format!("Bearer {tok}")
-        });
-    }
-    json!({
-        "mcpServers": {
-            "taboom": server
-        }
-    })
 }
 
 #[cfg(test)]
@@ -499,40 +497,4 @@ mod tests {
         assert_eq!(mcp_content(&ToolResult::ok(json!({ "ok": true })))[0]["type"], "text");
     }
 
-    #[test]
-    fn tokens_from_env_spec() {
-        let tokens = parse_tokens("agent-a=tok1, agent-b=tok2,broken,=x");
-        assert_eq!(tokens.len(), 2);
-        assert_eq!(tokens["agent-b"], "tok2");
-        assert!(parse_tokens("").is_empty());
-    }
-
-    #[test]
-    fn screenshot_becomes_image_block() {
-        let content = mcp_content(&json!({
-            "type": "image", "media_type": "image/png", "data": "AAAA", "width": 10, "height": 5,
-        }));
-        assert_eq!(content[0]["type"], "image");
-        assert_eq!(content[0]["mimeType"], "image/png");
-        assert_eq!(content[0]["data"], "AAAA");
-        assert!(content[1]["text"].as_str().unwrap().contains("\"width\":10"));
-        assert_eq!(mcp_content(&json!({ "ok": true }))[0]["type"], "text");
-    }
-
-    #[test]
-    fn mcp_config_json_format() {
-        let config = generate_mcp_config_json("localhost", 3456, Some("tok"));
-        let servers = config.get("mcpServers").unwrap();
-        let taboom = servers.get("taboom").unwrap();
-        assert_eq!(taboom.get("url").unwrap(), "http://localhost:3456/mcp");
-    }
-
-    #[test]
-    fn claude_code_config_format() {
-        let config = generate_claude_code_config("localhost", 3456, None);
-        let servers = config.get("mcpServers").unwrap();
-        let taboom = servers.get("taboom").unwrap();
-        assert_eq!(taboom.get("type").unwrap(), "http");
-        assert!(taboom.get("headers").is_none());
-    }
 }
