@@ -43,6 +43,25 @@ impl AuditLog {
         Ok(())
     }
 
+    /// Tool name, caller and outcome only; arguments can carry page text and never belong here.
+    pub fn log_tool_call(&self, tool: &str, client: &str, is_error: bool) -> Result<()> {
+        let entry = json!({
+            "ts": Utc::now().to_rfc3339(),
+            "event": "tool_call",
+            "tool": tool,
+            "client": client,
+            "ok": !is_error,
+        });
+
+        let mut line = serde_json::to_string(&entry)?;
+        line.push('\n');
+
+        let mut f = self.file.lock().unwrap();
+        f.write_all(line.as_bytes())?;
+        f.flush()?;
+        Ok(())
+    }
+
     pub fn log_secret_used(&self, secret_name: &str, domain: &str) -> Result<()> {
         let entry = json!({
             "ts": Utc::now().to_rfc3339(),
@@ -65,6 +84,7 @@ impl AuditLog {
         secret_name: &str,
         observed_domain: &str,
         allowed_domains: &[String],
+        reason: &str,
     ) -> Result<()> {
         let entry = json!({
             "ts": Utc::now().to_rfc3339(),
@@ -72,6 +92,7 @@ impl AuditLog {
             "secret_name": secret_name,
             "observed_domain": observed_domain,
             "allowed_domains": allowed_domains,
+            "reason": reason,
         });
 
         let mut line = serde_json::to_string(&entry)?;
