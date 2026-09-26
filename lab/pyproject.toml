@@ -19,5 +19,9 @@ dev = ["pytest>=7.0", "pytest-cov>=4.0"]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+# data/ holds the human-shape fixture, not a package
+[tool.setuptools]
+packages = ["taboom_lab"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
