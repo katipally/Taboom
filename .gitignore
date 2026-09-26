@@ -21,6 +21,7 @@ htmlcov/
 .env
 .env.*
 !.env.example
+/vault-passphrase
 !**/.env.example
 
 # Taboom runtime data (also protect runs with TABOOM_HOME set to the repo)
@@ -38,6 +39,8 @@ htmlcov/
 
 # Optional research snapshots; not part of the application or Docker build
 /source-codes/
+/lab/traces.jsonl
+/lab/gauntlet/
 
 # OS and editor files
 .DS_Store
