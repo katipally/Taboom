@@ -59,13 +59,31 @@ class Scoreboard:
         return "\n".join(lines)
 
     def save(self, path: str | Path) -> None:
-        with open(path, "w") as f:
-            json.dump([asdict(r) for r in self.results], f, indent=2)
+        path = Path(path)
+        existing: dict[str, object] | None = None
+        if path.exists():
+            with path.open(encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                existing = data
+        results = [asdict(r) for r in self.results]
+        if existing is None:
+            output: object = results
+        else:
+            existing["results"] = results
+            existing.setdefault("gauntlet_runs", [])
+            output = existing
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(output, f, indent=2)
 
     @classmethod
     def load(cls, path: str | Path) -> Scoreboard:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
+        if isinstance(data, dict):
+            data = data.get("results", [])
+        if not isinstance(data, list):
+            raise ValueError("scoreboard must be a result list or an object containing results")
         board = cls()
         board.results = [Result(**r) for r in data]
         return board
