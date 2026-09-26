@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-and-lab:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Run Rust tests
+        run: cargo test --workspace --locked
+      - name: Export Rust humanizer traces
+        run: cargo run -p taboom-humanizer --example trace_export -- lab/traces.jsonl
+      - name: Install eval lab
+        run: python -m pip install -e "./lab[dev]"
+      # ratchet: lower the ceiling as the humanizer gets harder to tell from people
+      - name: Real-human shape gate (mean AUC ceiling)
+        run: >-
+          python -m taboom_lab.shape_eval
+          --human-fixture lab/data/a11y_cua_su_shape_features.json
+          --rust-traces lab/traces.jsonl
+          --max-mean-auc 0.97
+      - name: Run eval lab tests
+        run: python -m pytest lab
