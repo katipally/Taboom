@@ -5,18 +5,21 @@ import pytest
 
 from taboom_lab.datasets import MouseTrace
 from taboom_lab.detector import Detector
-from taboom_lab.regression import _generate_mouse_trace, _generate_bot_trace
+from taboom_lab.regression import _generate_bot_trace, load_rust_traces
 
 
 def _make_dataset(n_each: int = 30):
     rng = np.random.default_rng(42)
-    humans = []
+    rust_moves = [trace.data for trace in load_rust_traces() if trace.action == "move"]
+    if len(rust_moves) < n_each:
+        raise AssertionError(f"need {n_each} Rust movement traces; found {len(rust_moves)}")
+    humans = rust_moves[:n_each]
     bots = []
-    for _ in range(n_each):
-        to_x = rng.uniform(200, 800)
-        to_y = rng.uniform(200, 600)
-        humans.append(_generate_mouse_trace(rng, to_pt=(to_x, to_y)))
-        bots.append(_generate_bot_trace(rng, to_pt=(to_x, to_y)))
+    for trace in humans:
+        assert isinstance(trace, MouseTrace)
+        start = (trace.points[0][1], trace.points[0][2])
+        end = (trace.points[-1][1], trace.points[-1][2])
+        bots.append(_generate_bot_trace(rng, from_pt=start, to_pt=end))
     return humans, bots
 
 
@@ -45,7 +48,10 @@ class TestDetector:
         assert "auc" in metrics
         assert "feature_importance" in metrics
         assert metrics["accuracy"] > 0.5
-        assert 0.0 <= metrics["auc"] <= 1.0
+        # CI evaluates a held-out synthetic control: tagged Rust-humanizer movements against
+        # the intentionally naive linear, constant-interval bot. This is a regression floor for
+        # that pair only, not a claim about an external real-human corpus.
+        assert metrics["auc"] >= 0.90
 
     def test_cross_validate(self):
         humans, bots = _make_dataset(30)
