@@ -25,6 +25,7 @@ target/
 # Local credentials and VM/runtime artifacts
 .env
 .env.*
+/vault-passphrase
 *.qcow2
 *.overlay
 *.age

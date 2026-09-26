@@ -1,7 +1,18 @@
-# Stage 1: build Rust binaries
+ARG TABOOM_ENGINES=chrome
+ARG TARGETARCH
+ARG BUILDARCH
+
+# Stage 1: build the daemon
 FROM rust:1-bookworm AS builder
+ARG TABOOM_ENGINES=chrome
+ARG TARGETARCH
+ARG BUILDARCH
 
 WORKDIR /src
+COPY docker/install-fortress.sh /tmp/install-fortress.sh
+RUN TABOOM_ENGINES="$TABOOM_ENGINES" TARGETARCH="$TARGETARCH" BUILDARCH="$BUILDARCH" \
+    sh /tmp/install-fortress.sh --validate-only
+
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 
@@ -28,6 +39,9 @@ RUN wayland-scanner client-header wlr-virtual-pointer-unstable-v1.xml vpointer-c
 
 # Stage 3: runtime
 FROM debian:bookworm-slim
+ARG TABOOM_ENGINES=chrome
+ARG TARGETARCH
+ARG BUILDARCH
 
 # Google Chrome from Google's signed apt repo (amd64 and arm64)
 ADD --chmod=644 https://dl.google.com/linux/linux_signing_key.pub /etc/apt/keyrings/google-chrome.asc
@@ -38,16 +52,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     sway grim \
+    tesseract-ocr-all \
     wayvnc novnc websockify \
+    util-linux \
     wl-clipboard \
     foot fuzzel \
     wf-recorder ffmpeg \
     google-chrome-stable \
     adwaita-icon-theme \
-    fonts-liberation fonts-noto-core \
+    fonts-liberation fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core \
+    locales-all tzdata xkb-data \
+    curl \
+    git \
     dbus-x11 \
     procps \
     && rm -rf /var/lib/apt/lists/*
+
+# The release archive is downloaded only for the explicit x86_64 build. The installer pins the
+# upstream tag and verifies its exact SHA256SUMS entry before extracting any files.
+COPY docker/install-fortress.sh /opt/taboom/install-fortress.sh
+RUN TABOOM_ENGINES="$TABOOM_ENGINES" TARGETARCH="$TARGETARCH" BUILDARCH="$BUILDARCH" \
+    sh /opt/taboom/install-fortress.sh
 
 # taboom user
 RUN useradd -m -u 1000 -s /bin/bash taboom \
@@ -70,6 +95,8 @@ COPY docker/entrypoint.sh /opt/taboom/entrypoint.sh
 COPY docker/sway.conf /opt/taboom/sway.conf
 COPY docker/taboom-browser docker/taboom-bar /usr/local/bin/
 COPY image/chrome-policy.json /etc/opt/chrome/policies/managed/taboom.json
+# Chromium builds such as Fortress read policy from here instead
+COPY image/chrome-policy.json /etc/chromium/policies/managed/taboom.json
 # the 6080 port link (e.g. in Docker Desktop) opens the live view instead of a file listing
 COPY docker/novnc-index.html /usr/share/novnc/index.html
 
