@@ -3,7 +3,12 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
+      args:
+        TABOOM_ENGINES: ${TABOOM_ENGINES:-chrome}
     restart: unless-stopped
+    # `cpus:` is a quota and Chrome still reports the full hardware concurrency. Set
+    # TABOOM_CPUSET=0-3 in the host .env when a persona declares cpus = 4.
+    cpuset: ${TABOOM_CPUSET:-}
     # tini as PID 1 reaps exited processes; without it a closed Chrome lingers as zombies
     # that hold the profile lock, and the browser can never be reopened
     init: true
@@ -14,20 +19,38 @@ services:
       - "${TABOOM_PUBLISH:-127.0.0.1}:${TABOOM_VIEW_PORT:-6080}:6080"
     environment:
       - TABOOM_HOME=/home/taboom/.taboom
+      # Manual gauntlet output lives in the bind-mounted lab directory. Git metadata is read-only.
+      - TABOOM_LAB_DIR=/home/taboom/lab
+      - TABOOM_GIT_DIR=/home/taboom/.git
+      - TABOOM_GIT_COMMIT=${TABOOM_GIT_COMMIT:-}
+      # the one persona this container runs: personas/<name>.toml in the data volume (written
+      # with US defaults on first boot). One persona per Compose project: docker compose -p <name>
+      - TABOOM_PERSONA=${TABOOM_PERSONA:-default}
+      # Set in .env (amd64 or arm64) to reject x86 emulation on an ARM Docker host.
+      - TABOOM_HOST_ARCH=${TABOOM_HOST_ARCH:-unknown}
+      # vault passphrase for route.auth = "vault:<name>"; mount it as a Compose secret there
+      - TABOOM_VAULT_PASSPHRASE_FILE=${TABOOM_VAULT_PASSPHRASE_FILE:-/run/secrets/taboom_vault_passphrase}
+      # seconds between route re-checks (minimum 30); a failure refuses actions until one passes
+      - TABOOM_ROUTE_RECHECK_S=${TABOOM_ROUTE_RECHECK_S:-300}
       - TABOOM_MCP_BIND=0.0.0.0
       # optional bearer auth, one lease holder per name: agent-a=tok1,agent-b=tok2
       - TABOOM_MCP_TOKENS=${TABOOM_MCP_TOKENS:-}
       # base of shareable recording links; change it when others reach this box by another name
       - TABOOM_PUBLIC_URL=${TABOOM_PUBLIC_URL:-http://localhost:${TABOOM_MCP_PORT:-3456}}
-      # optional: log every mouse/keyboard event to this file (e.g. for the eval lab)
+      # optional: delete the oldest finished recordings once they pass this many GB
+      - TABOOM_RECORDINGS_MAX_GB=${TABOOM_RECORDINGS_MAX_GB:-}
+      # optional: log every mouse, keyboard, and scroll event as JSONL for the eval lab
       - VINPUT_TRACE=${VINPUT_TRACE:-}
       - TABOOM_VIEW_URL=http://localhost:${TABOOM_VIEW_PORT:-6080}/vnc.html?autoconnect=1&resize=scale&view_only=1
+    # room to finalize the session video on `docker stop` (the default is 10s)
+    stop_grace_period: 30s
     # Chrome crashes tabs with Docker's default 64 MB /dev/shm
     shm_size: 1gb
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/3456"]
+      # /healthz probes vinput, sway and Chrome, not just the port
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:3456/healthz"]
       interval: 10s
-      timeout: 3s
+      timeout: 10s
       start_period: 20s
       retries: 3
     # sway headless needs these capabilities
@@ -35,9 +58,12 @@ services:
       - SYS_PTRACE
     security_opt:
       - seccomp:unconfined
-    # persist browser profile + persona config across restarts
+    # persist browser profile + persona config across restarts; Compose prefixes the volume with
+    # the project name, so each `-p <persona>` gets its own
     volumes:
       - taboom-data:/home/taboom/.taboom
+      - ./lab:/home/taboom/lab
+      - ./.git:/home/taboom/.git:ro
 
 volumes:
   taboom-data:
