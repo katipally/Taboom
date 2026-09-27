@@ -36,7 +36,8 @@ pub fn launch(home: &Path, profile: &Path, engine: Engine, flags: &[String]) -> 
     let _ = std::fs::remove_file(&socket_path);
     let listener = UnixListener::bind(&socket_path)
         .with_context(|| format!("binding private Chrome pipe socket {}", socket_path.display()))?;
-    let _socket_cleanup = SocketCleanup::new(socket_path.clone())?;
+    let socket = SocketCleanup::new(socket_path.clone())?.holding(listener);
+    let listener = socket.listener.as_ref().expect("held until drop");
     std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
 
@@ -234,21 +235,42 @@ struct SocketCleanup {
     path: std::path::PathBuf,
     device: u64,
     inode: u64,
+    /// Our own listener, closed first on drop so a connect probe only reaches a successor.
+    listener: Option<UnixListener>,
 }
 
 impl SocketCleanup {
     fn new(path: std::path::PathBuf) -> Result<Self> {
         use std::os::unix::fs::MetadataExt;
         let metadata = std::fs::symlink_metadata(&path)?;
-        Ok(Self { path, device: metadata.dev(), inode: metadata.ino() })
+        Ok(Self { path, device: metadata.dev(), inode: metadata.ino(), listener: None })
+    }
+
+    fn holding(mut self, listener: UnixListener) -> Self {
+        self.listener = Some(listener);
+        self
     }
 }
 
 impl Drop for SocketCleanup {
     fn drop(&mut self) {
         use std::os::unix::fs::MetadataExt;
-        // A stale wrapper can replace the socket while this parent is exiting. Only unlink the
-        // exact socket inode this process bound; never remove a successor's live endpoint.
+        // A stale wrapper can replace the socket while this parent is exiting; never remove a
+        // successor's live endpoint. Linux reuses a freed inode number at once, so device and
+        // inode alone can match the successor: anything still answering is not ours.
+        drop(self.listener.take());
+        // A child forked elsewhere can hold our listener for the microseconds before its exec;
+        // only a socket still answering after a few retries is a successor's.
+        let successor_live = (0..5).all(|_| {
+            let answered = UnixStream::connect(&self.path).is_ok();
+            if answered {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            answered
+        });
+        if successor_live {
+            return;
+        }
         if std::fs::symlink_metadata(&self.path)
             .is_ok_and(|metadata| metadata.dev() == self.device && metadata.ino() == self.inode)
         {
@@ -429,5 +451,25 @@ mod tests {
         drop(old_cleanup);
         assert!(UnixStream::connect(&path).is_ok());
         drop(new_listener);
+    }
+
+    #[test]
+    fn reused_inode_does_not_remove_a_live_successor() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("cdp.sock");
+        let successor = UnixListener::bind(&path).unwrap();
+        // Same device and inode as the live socket: what Linux inode reuse produces.
+        drop(SocketCleanup::new(path.clone()).unwrap());
+        assert!(UnixStream::connect(&path).is_ok());
+        drop(successor);
+    }
+
+    #[test]
+    fn held_listener_is_closed_and_its_socket_removed() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("cdp.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        drop(SocketCleanup::new(path.clone()).unwrap().holding(listener));
+        assert!(!path.exists());
     }
 }
