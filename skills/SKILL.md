@@ -32,9 +32,37 @@ Never type secrets directly. Use the placeholder syntax:
 <secret>secret-name</secret>
 ```
 
-The system will resolve the placeholder to the actual value and type it with zero typo rate. This keeps secrets out of your context and logs.
+Taboom resolves placeholders from its unlocked age-encrypted vault. The operator must add each
+credential with `taboom vault add`; never include a value in an MCP call, shell argument, or your
+conversation. TOTP seeds resolve to the current code. The type tool checks the current hostname
+against the item's allow-list, including exact and subdomain matches; an empty list denies use.
 
-In Docker mode the vault is not available yet: `type` refuses `<secret>` placeholders. Use `handoff_start` and let the human type the secret through the live view.
+Secret typing requires a healthy route and a focused Chrome window that is not fullscreen. HTTP
+pages are refused. Chrome's private `--remote-debugging-pipe` and `Target.getTargets` provide
+normalized page-host candidates and their schemes; page IDs, titles, paths, and query strings are
+not sent over the local bridge. Taboom does not attach to a page, enable `Runtime`, or open a
+debugging port. Since the target list does not identify the active tab, private OCR of only the
+visible omnibox region selects the candidate matching the focused Chrome window, and every open
+HTTP(S) tab and window must be on that same host, with no about:blank, data: or file: pages
+open: close other tabs and popups first. A hidden scheme
+requires an HTTPS candidate with no same-host HTTP candidate; an explicit HTTP URL refuses typing.
+The crop comes from focused Chrome window geometry and active output
+scale. Unavailable geometry, OCR errors, low confidence, unreadable text, or a host mismatch also
+refuse. OCR stays in memory and is not returned, cached, or recorded. This does not prove that a web
+form field rather than Chrome's address bar has focus, or prevent navigation immediately after the
+final checks. Immediately before a secret call, take a screenshot and click the intended page field.
+Keep the page in place while typing; Taboom repeats target and omnibox checks before stopping video
+and after finalizing it, then rechecks focus and route immediately before input. Use `submit: true`
+only when the intended field and form submission are confirmed.
+Secret calls use exact keymap strokes, skip the typo planner, and never paste or use the clipboard.
+The recorder keeps only the original placeholder, and the audit log stores the secret name and
+hostname, never the value.
+
+Before typing, Taboom finalizes the active screen video and waits for pending frame captures. After
+the first secret, screenshots, zoom images, recording frames, and further video are disabled for
+the rest of the persistent data volume. This survives container restarts; resetting the data volume
+(for example `docker compose down -v`, which also deletes the vault and browser profile) clears it.
+The live view remains visible to a person who opens it.
 
 ## Actions
 
@@ -58,16 +86,18 @@ Use `open_url` to go to a page, or `ctrl+l`, type the address, and `submit`.
 
 You act only through the mouse and keyboard. The top bar has clickable Browser, Terminal and Apps buttons. Shortcuts: super+b browser (reopens it if closed), super+Return terminal, super+d app launcher, super+shift+q close window, super+f fullscreen, super+arrows focus, super+1..4 workspaces. If the browser is gone, click Browser in the top bar or press super+b.
 
-For held input use `mouse_down`/`mouse_up` and `key_down`/`key_up`. Everything held is released at `persona_release`.
+For held input use `mouse_down`/`mouse_up` and `key_down`/`key_up`. Everything held is released at `session_end`.
 
 ## Personas
 
-Each persona has its own Chrome profile (cookies, logins, history, tabs). Only one persona is active at a time. Acquiring a different persona than the one the browser is on closes the browser and reopens it on that persona's profile, so take a fresh screenshot after `persona_acquire`. Use `persona_create { name }` to add a persona (optional `timezone`, `locale`, `keyboard_layout`, `languages`); it needs no lease and is usable right away. Chrome sign-in is disabled, so there is no Google account to log in to.
+This Taboom container is exactly one persona, with its own Chrome profile (cookies, logins, history, tabs), timezone, languages, keyboard layout and network route. There is nothing to pick or switch: call `session_start` before acting and `session_end` when done. Another persona is another Taboom server, not a tool call. `persona_status` (no session needed) shows the persona, its applied settings and the route's health. If actions are refused because the route check failed, stop and tell the user; do not try to work around it. Chrome sign-in is disabled, so there is no Google account to log in to.
 
 ## Recordings
 
-Every session is recorded as a video plus a step log with frames. When the user asks what you did, use `recording_get` (add `frames: true` or a `step` to see images). When they want to watch or share it, use `recording_share` and give them `url` (replay page with video) or `video_url` (the video file). The video is finalized a few seconds after `persona_release`.
+Sessions have a step log. Before secret typing, screen video and frames are recorded. Secret typing stops the video before the keys are pressed and disables all later visual capture for the rest of the persistent data volume; `recording_get` will not return images after this state begins. Share only existing video that ends before the secret action.
 
-## Handoff
+## Manual User Control
 
-When you encounter something you cannot handle (CAPTCHA, phone verification, payment entry), use `handoff_start` with a clear reason. It pauses your input and returns `view_url`, a take-over live view link: give it to the user. When they tell you they are done, call `handoff_resolve` with the handoff `id` (`handoff_wait` only reports the current status). After handoff completes, take a fresh screenshot to see the new state.
+There is no handoff workflow in Taboom. If a task requires user interaction, start a session,
+call `view_url`, and ask the user to use its `takeover_url`. After they confirm they are done, take
+a fresh screenshot before continuing.
