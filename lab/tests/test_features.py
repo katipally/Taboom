@@ -68,6 +68,11 @@ class TestMouseFeatures:
 
 
 class TestKeyboardFeatures:
+    def test_constant_timing_has_finite_zero_skew(self):
+        feat = extract_keyboard_features(_make_keystroke_trace())
+        assert feat["hold_skew"] == feat["flight_skew"] == 0.0
+        assert all(math.isfinite(value) for value in feat.values())
+
     def test_hold_time_positive(self):
         trace = _make_keystroke_trace()
         feat = extract_keyboard_features(trace)

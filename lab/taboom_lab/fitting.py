@@ -65,66 +65,39 @@ def fit_typing_params(keystroke_data: list[tuple[int, int, bool]]) -> TypingPara
     Input: list of (timestamp_us, key_code, is_press)
     """
     params = TypingParams()
-
-    presses: dict[int, int] = {}
-    releases: list[tuple[int, int]] = []
-    hold_times: list[float] = []
-
-    for t_us, key, is_press in keystroke_data:
-        if is_press:
-            presses[key] = t_us
-        else:
-            if key in presses:
-                hold_ms = (t_us - presses[key]) / 1000.0
-                if 0 < hold_ms < 500:
-                    hold_times.append(hold_ms)
-                releases.append((t_us, key))
-                del presses[key]
-
-    if hold_times:
-        params.hold_mean_ms = float(np.mean(hold_times))
-        params.hold_std_ms = float(np.std(hold_times))
-
-    releases.sort()
-    flight_by_bigram: dict[str, list[float]] = {}
-    for i in range(1, len(releases)):
-        t_prev, k_prev = releases[i - 1]
-        t_curr, k_curr = releases[i]
-        flight_ms = (t_curr - t_prev) / 1000.0
-        if 0 < flight_ms < 2000:
-            bigram = f"{k_prev}_{k_curr}"
-            flight_by_bigram.setdefault(bigram, []).append(flight_ms)
-
-    for bigram, flights in flight_by_bigram.items():
-        arr = np.array(flights)
-        params.bigram_flight_ms[bigram] = (float(np.mean(arr)), float(np.std(arr)))
-
-    overlaps = 0
-    total = 0
-    press_list = sorted(
-        [(t, k) for t, k, p in keystroke_data if p], key=lambda x: x[0]
-    )
-    release_map: dict[int, int] = {}
-    for t, k, p in keystroke_data:
-        if not p and k in presses:
-            pass
-        if not p:
-            release_map[k] = t
-
-    for i in range(1, len(press_list)):
-        t_press, k = press_list[i]
-        _, k_prev = press_list[i - 1]
-        if k_prev in release_map and release_map[k_prev] > t_press:
-            overlaps += 1
-        total += 1
-
-    params.rollover_probability = overlaps / total if total > 0 else 0.2
-
+    active: dict[int, int] = {}
+    strokes: list[tuple[int, int, int]] = []
+    for timestamp, key, pressed in sorted(keystroke_data, key=lambda event: event[0]):
+        if pressed:
+            # Ignore key-repeat events while the same physical key is held.
+            active.setdefault(key, timestamp)
+        elif key in active:
+            start = active.pop(key)
+            if 0 < timestamp - start < 500_000:
+                strokes.append((start, timestamp, key))
+    strokes.sort()
+    if strokes:
+        holds = np.asarray([(release - press) / 1000 for press, release, _ in strokes])
+        params.hold_mean_ms = float(np.mean(holds))
+        params.hold_std_ms = float(np.std(holds))
+    flights_by_bigram: dict[str, list[float]] = {}
+    overlaps = total = 0
+    for previous, current in zip(strokes, strokes[1:]):
+        flight = (current[0] - previous[1]) / 1000
+        # Flight is release-to-next-press, and can be negative for rollover.
+        if -500 < flight < 2000:
+            flights_by_bigram.setdefault(f"{previous[2]}_{current[2]}", []).append(flight)
+            overlaps += flight < 0
+            total += 1
+    for bigram, flights in flights_by_bigram.items():
+        params.bigram_flight_ms[bigram] = (float(np.mean(flights)), float(np.std(flights)))
+    if total:
+        params.rollover_probability = overlaps / total
     return params
 
 
 def export_params(params: TypingParams | dict, output_path: str | Path) -> None:
-    """Export fitted parameters as JSON for the Rust humanizer to load."""
+    """Export fitted typing statistics as JSON for offline analysis; this schema is not a runtime model."""
     if isinstance(params, TypingParams):
         data = asdict(params)
     else:

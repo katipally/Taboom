@@ -67,6 +67,14 @@ def extract_mouse_features(trace: MouseTrace) -> dict[str, float]:
     }
 
 
+def _finite_skew(values: NDArray[np.float64]) -> float:
+    # Skew is undefined for constant samples. Returning zero keeps detector inputs finite.
+    if len(values) < 3 or np.std(values) <= np.finfo(float).eps * max(1.0, float(np.max(np.abs(values)))):
+        return 0.0
+    result = float(sp_stats.skew(values))
+    return result if np.isfinite(result) else 0.0
+
+
 def extract_keyboard_features(trace: KeystrokeTrace) -> dict[str, float]:
     if len(trace) < 4:
         return _empty_keyboard_features()
@@ -99,8 +107,8 @@ def extract_keyboard_features(trace: KeystrokeTrace) -> dict[str, float]:
         "hold_std_ms": float(np.std(hold_arr)),
         "flight_mean_ms": float(np.mean(flight_arr)),
         "flight_std_ms": float(np.std(flight_arr)),
-        "hold_skew": float(sp_stats.skew(hold_arr)) if len(hold_arr) > 2 else 0.0,
-        "flight_skew": float(sp_stats.skew(flight_arr)) if len(flight_arr) > 2 else 0.0,
+        "hold_skew": _finite_skew(hold_arr),
+        "flight_skew": _finite_skew(flight_arr),
         "n_keystrokes": float(len(hold_times)),
     }
 
