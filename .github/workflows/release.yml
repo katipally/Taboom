@@ -10,7 +10,12 @@ permissions:
   packages: write
 
 jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
   release:
+    needs: verify
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -40,7 +45,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
 
       - name: Build and publish Chrome images
         uses: docker/build-push-action@v7.4.0
@@ -60,5 +65,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --generate-notes
+            release_args=(--generate-notes)
+            if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+              release_args+=(--prerelease)
+            fi
+            gh release create "$GITHUB_REF_NAME" "${release_args[@]}"
           fi

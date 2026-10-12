@@ -13,12 +13,12 @@ Taboom is a real MCP server. Start it once and any MCP client can connect: Claud
 Desktop, Cursor, VS Code, your own agent loop, or plain `curl`. You can watch the agent live in
 your browser, and every session is recorded step by step so you can replay or share it.
 
-**Research status:** the runtime currently uses heuristic motion and timing models with randomized
-parameters and stable persona habits. The lab evaluates exported Rust traces, including comparisons
-with derived human interaction data. Its parameter-fitting utilities are not yet connected to the
-runtime. Playbooks and MCP prompts guide the external agent's decisions; they do not enforce or
-establish human-like reasoning. Passing regression checks does not demonstrate that behavior is
-indistinguishable from a person. See the [evaluation lab](lab/README.md) for protocols and limitations.
+**Research status:** the runtime uses a bundled library of normalized human mouse paths for
+movements of 50–800 pixels. The library is derived reproducibly from pinned interaction logs, with
+separate participant groups reserved for evaluation. Movement timing, shorter/longer moves, typing,
+scrolling and idle behavior still use heuristic models. Playbooks and MCP prompts guide the external
+agent's decisions; they do not enforce or establish human-like reasoning. Passing regression checks does not demonstrate that behavior
+is indistinguishable from a person. See the [evaluation lab](lab/README.md) for protocols and limitations.
 
 ```
  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
@@ -202,7 +202,7 @@ The server speaks MCP over **streamable HTTP** at one URL:
  http://localhost:3456/mcp
 ```
 
-Any client that supports MCP Streamable HTTP can use it directly. The server exposes 38 tools and
+Any client that supports MCP Streamable HTTP can use it directly. The server exposes 39 tools and
 read-only resources for its agent playbook and site notes.
 
 ### Claude Code
@@ -222,9 +222,9 @@ claude mcp add --transport http --scope user taboom http://localhost:3456/mcp \
   --header "Authorization: Bearer <your-token>"
 ```
 
-### Cursor, VS Code, Claude Desktop, other JSON-config clients
+### Cursor and clients using `mcpServers`
 
-Most clients take an `mcpServers` block. Paste this:
+For Cursor, put this in `.cursor/mcp.json`:
 
 ```json
 {
@@ -238,9 +238,44 @@ Most clients take an `mcpServers` block. Paste this:
 }
 ```
 
-Drop the `headers` line if you did not set tokens. Where the file lives depends on the client
-(for example `.cursor/mcp.json` in Cursor, `.vscode/mcp.json` in VS Code). Check your client's
-docs for the current path.
+Drop the `headers` line if you did not set tokens.
+
+### VS Code
+
+VS Code's `.vscode/mcp.json` uses a `servers` block ([configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration)):
+
+```json
+{
+  "servers": {
+    "taboom": {
+      "type": "http",
+      "url": "http://localhost:3456/mcp",
+      "headers": { "Authorization": "Bearer <your-token>" }
+    }
+  }
+}
+```
+
+Drop the `headers` line if you did not set tokens.
+
+### Claude Desktop
+
+For local desktop configuration, use a stdio-to-HTTP bridge such as
+[`mcp-remote`](https://github.com/punkpeye/mcp-remote). It requires Node.js and downloads through `npx`:
+
+```json
+{
+  "mcpServers": {
+    "taboom": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://localhost:3456/mcp", "--allow-http", "--transport", "http-only"]
+    }
+  }
+}
+```
+
+If tokens are enabled, add `"--header-file", "/absolute/path/to/taboom-headers.txt"` to `args`.
+That local file should contain `Authorization: Bearer <your-token>`; keep it private.
 
 ### Your own code
 
@@ -256,7 +291,7 @@ It is plain JSON-RPC 2.0 over POST. The flow any client follows:
    │ POST resources/read ──────────────────>│
    │<──────────── playbook text ────────────│
    │ POST tools/list ───────────────────────>│
-   │<──────────────────────── 38 tools        │
+   │<──────────────────────── 39 tools        │
    │ POST tools/call session_start ─────────>│
    │ POST tools/call screenshot ────────────>│
    │<─────────────── image block (PNG)        │
@@ -346,12 +381,18 @@ the intended page field; keep that page in place while typing. Taboom repeats th
 checks before stopping video and after finalizing it, then rechecks focus and route immediately
 before input. Use `submit: true` only when the intended field and form submission are confirmed.
 
-The recorder stores the original placeholder, never the expanded value. Taboom stops and finalizes
-the current screen video before typing, waits for scheduled frame captures, then disables new
-screenshots, zoom images, recording frames, and video for the rest of the persistent data volume.
-That privacy marker survives a normal restart; only resetting the data volume clears it. The audit
-log records the secret name and hostname for successful or refused attempts, never the value. The
-live view remains visible to a person who opens it.
+The step log stores the original placeholder, never the expanded value. Before typing, Taboom
+finalizes the active video clip, waits for in-flight capture, and invalidates older pending frames.
+It pauses capture and input tracing during the exact secret keystrokes, then resumes screenshots,
+OCR, saved frames and video. Resumed video clips are joined into the same session video without
+overwriting footage from before secret entry. The video omits the secret-entry interval.
+
+**Visible-secret exposure:** after typing, live images, OCR, saved frames and video can contain
+credentials that remain visible on screen. Shared recordings can expose them. Use masked password
+fields and review artifacts before sharing. The vault value is excluded from tool argument logs
+and secret-use audit entries; that does not redact screen content afterward. Older persistent
+capture-blocking markers are removed automatically on upgrade, without deleting the vault or
+browser profile. The human live view remains available throughout.
 
 `~/.taboom/audit/taboomd.jsonl` is append-only and outlives recording cleanup. Besides vault
 events it logs every MCP tool call: tool name, client and whether it succeeded, never the
@@ -395,9 +436,9 @@ http://localhost:6080/vnc.html?autoconnect=1&resize=scale&view_only=1
 
 ## 5. Recordings
 
-Every session records a **step log**. Screen video and frames are captured until a vault secret is
-typed; then video is finalized before typing and all further visual recording is disabled for the
-rest of the persistent data volume. A session starts at `session_start` and ends at `session_end`.
+Every session records a **step log**, screen video and frames. Visual recording pauses during vault
+secret keystrokes and resumes afterward, potentially including visible credentials. A session
+starts at `session_start` and ends at `session_end`.
 
 ```
  session_start ───┬─ screenshot ─┬─ click ─┬─ type ─┬─ ... ─┬─ session_end
@@ -446,9 +487,8 @@ starts, the oldest sessions are deleted until the rest fit, never the one still 
 nothing is deleted automatically.
 
 File contents from `files_put` are not recorded (only their size). `<secret>` placeholders are
-stored as the placeholder, never the value. When a secret is typed, `recording_get` will not return
-frames for that data volume, including older frames; a video finalized before the secret remains
-available because it ends before the secret was typed.
+stored as the placeholder, never the expanded value in tool arguments. Capture pauses during secret
+keystrokes, then resumes. Later frames and video can include visible credentials; review before sharing.
 
 ---
 
@@ -475,7 +515,9 @@ available because it ends before the secret was typed.
  Challenges: detect_challenge, challenge_click_hold, challenge_slider,
              challenge_select, challenge_handoff
 
- 38 tools in total.
+ Batch flow: batch_actions
+
+ 39 tools in total.
 ```
 
 `**` `open_url` is keyboard only: super+b (focuses the browser, or reopens it if closed), ctrl+t,
@@ -522,10 +564,10 @@ Every mouse move and keystroke is planned by `taboom-humanizer` and played throu
 persistent virtual mouse and keyboard (`vinput`), in real time:
 
 ```
- aimed move   one continuous curved stroke: a primary movement that lands a little long or
-              short, plus a corrective movement that starts before the first one stops.
-              Speed rises fast and tails off; every move gets its own speed profile, bend and
-              duration (Fitts' law); tremor fades out as the hand lands. Like a person
+ aimed move   for 50–800 px moves, draws a comparable-length normalized human path,
+              rotates and scales it to the target, and applies a heuristic velocity profile.
+              Other distances use curved heuristic strokes with corrective movements.
+              Duration follows Fitts' law; small tremor fades in and out. When clicking,
               aiming at a control rather than a pixel, it lands within 3 px of the point
               (sd ~1 px), so repeated clicks on one spot never hit the identical pixel
  between      the hand never freezes: it rests and drifts slowly near where the last action
@@ -538,7 +580,7 @@ persistent virtual mouse and keyboard (`vinput`), in real time:
               occasional thinking pauses; typos on the physical row neighbor, sometimes
               noticed a key or two late, then backspaced
  per persona  a stable style (speed, typing habits) from the persona's `humanizer.seed`;
-              fresh randomness every session, so no two sessions replay the same motion
+              fresh randomness every session varies path selection and timing
 ```
 
 The idle hand pauses while an action runs or a mouse button is held, and only runs during a
@@ -575,6 +617,31 @@ take over, or have the agent click it), or press super+b. `open_url` does this o
 Run `tools/list` for the full JSON schemas.
 
 ---
+
+### Continuous action sequences
+
+After observing a visible form, use `batch_actions` to fill its known fields in one MCP call. Each
+step uses its native tool arguments plus a `tool` field:
+
+```json
+{
+  "frame_id": "<latest screenshot frame_id>",
+  "actions": [
+    {"tool": "click", "x": 420, "y": 280, "describe": "Focus the name field"},
+    {"tool": "type", "text": "Alex", "mode": "keys"},
+    {"tool": "key", "combo": "Tab"},
+    {"tool": "type", "text": "alex@example.com", "mode": "keys"}
+  ]
+}
+```
+
+The batch keeps the desktop exclusively through 1–64 ordered steps, preserves normal humanizer
+input timing and vault checks, stops on the first error, and returns completed-step details and a
+fresh screenshot. Supported steps are `click`, `move`, `type`, `key`, `scroll`, and `wait`. Fill and
+verify before submitting in a separate call; `type` with `submit: true` is refused within a batch.
+The server cannot infer whether an arbitrary click or key submits a form, so the playbook requires
+the agent to keep submission out of the sequence. Break batches when a menu, autocomplete result,
+new page, or other unknown state needs observation. Never replay completed steps after an error.
 
 ## 7. Configuration
 
@@ -651,6 +718,7 @@ auth = "vault:shop-proxy"         # never a password in this file
 
 [humanizer]
 seed = 81723                      # stable typing and mouse habits
+mouse_model = "empirical"           # default; "heuristic" selects the comparison baseline
 ```
 
 Countries with built-in defaults: US, GB, DE, FR, JP, BR, IN. For others set `timezone` and all
@@ -673,8 +741,8 @@ How each field reaches the runtime:
  keyboard_layout    XKB_DEFAULT_LAYOUT for vinput, sway xkb_layout      XKB layout exists
  screen             sway output mode WxH scale S; Fortress              800-7680 x 600-4320, 1-3
                     --uxr-screen-width/height
- languages          fontconfig exposes only fonts that fit them         (Latin set + CJK, Arabic,
-                    (the image carries more)                             Hebrew, Devanagari, Thai)
+ languages          fontconfig accepts locale-relevant families         (Latin set + CJK, Arabic,
+                    (installed families remain as fallbacks)                             Hebrew, Devanagari, Thai)
  cpus               Chrome: Compose cpuset; Fortress:                  Chrome boot fails if cpuset
                     --uxr-hw-concurrency                                differs; Fortress > 0
  ram_mb             Chrome: host value only; Fortress:                  Chrome value must map to
@@ -731,7 +799,7 @@ audio noise; they do not freeze every part of Fortress's generated identity. Tab
 `--user-agent`, which Fortress documents as breaking consistency between the UA string and
 Client-Hints. The ordinary `TZ`, `LANG`, `LANGUAGE`, XKB and persona-aware fontconfig setup still
 applies. Taboom uses Fortress's upstream launcher for its browser setup while directing its
-fontconfig choice back to Taboom's existing filtered configuration; its private CDP pipe remains
+fontconfig choice back to Taboom's language-aware configuration; its private CDP pipe remains
 owned by `taboomd`.
 
 The Fortress release contains an opaque persona-generation component and device model data; the
@@ -909,8 +977,8 @@ With one configured token the CLI selects it automatically; with no tokens it us
 The manual `gauntlet` command takes the desktop lease, visits CreepJS, sannysoft, BrowserScan,
 and pixelscan, then saves a PNG and local OCR text for each page under `lab/gauntlet/`. It appends
 persona, engine and commit metadata to `lab/scoreboard.json`. It requires screen capture and OCR;
-if secret typing has disabled visual capture, it releases the session and stops before opening a
-detector page. It also refuses to run while another desktop session is active. Compose mounts
+if a screenshot cannot be captured, it releases the session and stops before opening a
+detector page. Vault typing does not permanently block the gauntlet's explicit captures. It also refuses to run while another desktop session is active. Compose mounts
 `lab/` read-write and `.git` read-only; when a worktree's `.git` file points outside that mount,
 set `TABOOM_GIT_COMMIT` to include the commit. Otherwise the scoreboard records `unknown` and the
 command reports that Git metadata was unavailable.
@@ -960,7 +1028,7 @@ docker compose exec taboom grim /tmp/s.png && docker compose cp taboom:/tmp/s.pn
  "<secret> placeholders refused"       check that the vault is unlocked, the hostname is allowed, Chrome is
                                        focused and not fullscreen, the visible omnibox matches an HTTPS page host,
                                        and no tabs on other sites or blank/data: popups are open
-screenshots disabled after secret    expected: reset the persistent data volume to re-enable visual output
+recording pauses during secret      expected: capture resumes afterward; visible credentials may be recorded
  Apple Silicon build is slow           expected on first build; later builds are cached
 ```
 
@@ -972,19 +1040,39 @@ The Docker image is the supported way to run. Native builds are for working on t
 
 ```bash
 cargo build --release            # builds the workspace binaries taboomd and taboom
-cargo test                       # all Rust tests
-cd lab && pip install -e ".[dev]" && pytest   # eval lab (Python)
+cargo test --workspace --locked   # Rust tests; 3 desktop-only tests are ignored here
+cargo run --locked -p taboom-humanizer --example trace_export -- lab/traces.jsonl
+python3 -m pip install -e "./lab[dev]"
+python3 -m pytest lab             # eval lab (Python)
 ```
 
 After changing Rust code, rebuild the container: `docker compose up -d --build`.
 
 The Docker-only architecture and development notes live in [`docs/PLAN.md`](docs/PLAN.md).
 
+For a real desktop smoke test, use a disposable Compose project with its own volume. The test
+stages a local form, fills three visible fields in one batch, and exercises all tools, including
+recording, file transfer, persona generation and gesture helpers. It changes the test desktop and
+clipboard; run it when no session is active:
+
+```bash
+docker compose -p taboom-test up -d --build --wait --wait-timeout 180
+python3 scripts/desktop_smoke.py --artifacts /tmp/taboom-smoke
+docker compose -p taboom-test down
+```
+
+Use different host ports if another instance is running, then pass `--url http://localhost:<port>`. For token-protected MCP,
+set `TABOOM_SMOKE_TOKEN` in the test process environment. The smoke script uses the default screen
+configuration and synthetic form values. A passing local fixture does not establish success on
+every live site or for external agent decision-making.
+
 ### Publishing a release
 
 Update the workspace version in `Cargo.toml`, run the checks above, then push a matching version
 tag such as `v0.1.0`. The release workflow builds Chrome images for `linux/amd64` and `linux/arm64`
-in GHCR and creates a GitHub release with generated notes. Fortress remains an opt-in source build.
+in GHCR and creates a GitHub release with generated notes after Rust/lab and native AMD64
+desktop-smoke CI pass for both Chrome and Fortress.
+Prerelease tags create a GitHub prerelease and do not update `latest`. Fortress remains an opt-in source build.
 
 After the first publish, set the GHCR package visibility to public in the repository's Packages
 settings so self-hosters can pull without logging in. Users can pin the image with `TABOOM_VERSION`
