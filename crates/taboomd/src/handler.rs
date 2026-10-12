@@ -181,6 +181,7 @@ pub struct ToolHandler {
     route: Arc<Monitor>,
     local: LocalExecutor,
     recorder: Arc<Recorder>,
+    home: PathBuf,
     views: Mutex<HashMap<String, View>>,
     ocr_cache: Mutex<OcrCache>,
     videos: Mutex<HashMap<String, (std::process::Child, PathBuf)>>,
@@ -199,7 +200,7 @@ struct SecretContext {
 }
 
 impl ToolHandler {
-    pub fn new(persona: Arc<Persona>, route: Arc<Monitor>, recorder: Arc<Recorder>, local: LocalExecutor) -> Self {
+    pub fn new(persona: Arc<Persona>, route: Arc<Monitor>, recorder: Arc<Recorder>, local: LocalExecutor, home: PathBuf) -> Self {
         local.start_idle();
         let files_dir = std::env::var_os("TABOOM_FILES_DIR")
             .map(PathBuf::from)
@@ -216,6 +217,7 @@ impl ToolHandler {
             route,
             local,
             recorder,
+            home,
             views: Mutex::new(HashMap::new()),
             ocr_cache: Mutex::new(OcrCache::default()),
             videos: Mutex::new(HashMap::new()),
@@ -306,7 +308,9 @@ impl ToolHandler {
                 | ToolCall::Scroll { .. } | ToolCall::Type { .. } | ToolCall::Key { .. }
                 | ToolCall::OpenUrl { .. } | ToolCall::Wait { .. } | ToolCall::MouseDown { .. }
                 | ToolCall::MouseUp { .. } | ToolCall::KeyDown { .. } | ToolCall::KeyUp { .. }
-                | ToolCall::HoldKey { .. },
+                | ToolCall::HoldKey { .. }
+                | ToolCall::ChallengeClickHold { .. } | ToolCall::ChallengeSlider { .. }
+                | ToolCall::ChallengeSelect { .. },
                 _,
             ) => recording::Frame::Pending("png"),
             _ => recording::Frame::None,
@@ -559,6 +563,8 @@ impl ToolHandler {
                 Err(e) => ToolResult::err(&e.to_string()),
             },
             ToolCall::PersonaStatus => self.persona_status(client_id),
+            ToolCall::PersonaGenerate { name, country } => settle(self.persona_generate(name, country)),
+            ToolCall::PersonaList => settle(self.persona_list()),
 
             ToolCall::RecordingList { persona, limit } => {
                 self.recording_list(persona.as_deref(), limit.unwrap_or(20).clamp(1, 500), client_id)
@@ -907,6 +913,78 @@ impl ToolHandler {
                 local.clipboard_set(text)?;
                 Ok(ToolResult::ok(json!({ "set": true, "chars": text.chars().count() })))
             }
+            ToolCall::DetectChallenge { region } => {
+                self.detect_challenge(local, client_id, region.as_ref())
+            }
+            ToolCall::ChallengeClickHold { x, y, describe, frame_id, hold_ms_min, hold_ms_max } => {
+                if let Some(fid) = frame_id {
+                    let current = self.views.lock().unwrap().get(client_id).map(|v| v.id.to_string());
+                    if current.as_deref().is_some_and(|c| c != fid) {
+                        bail!("frame {fid} is stale; take a new screenshot and use its coordinates");
+                    }
+                }
+                let (nx, ny) = self.to_native(local, client_id, *x, *y)?;
+                local.mouse_move(nx, ny)?;
+                let min = hold_ms_min.unwrap_or(800);
+                let max = hold_ms_max.unwrap_or(2000);
+                local.click_hold(min, max)?;
+                Ok(ToolResult::ok(json!({
+                    "held": true,
+                    "x": x,
+                    "y": y,
+                    "hold_ms_min": min,
+                    "hold_ms_max": max,
+                    "describe": describe,
+                })))
+            }
+            ToolCall::ChallengeSlider { from, to, describe } => {
+                let start = self.to_native(local, client_id, from.x, from.y)?;
+                let end = self.to_native(local, client_id, to.x, to.y)?;
+                local.slider_drag(start, end)?;
+                Ok(ToolResult::ok(json!({
+                    "slid": true,
+                    "from": { "x": from.x, "y": from.y },
+                    "to": { "x": to.x, "y": to.y },
+                    "describe": describe,
+                })))
+            }
+            ToolCall::ChallengeSelect { targets, describe, frame_id } => {
+                if targets.is_empty() {
+                    bail!("targets array must not be empty");
+                }
+                if targets.len() > 20 {
+                    bail!("too many targets (max 20, got {})", targets.len());
+                }
+                if let Some(fid) = frame_id {
+                    let current = self.views.lock().unwrap().get(client_id).map(|v| v.id.to_string());
+                    if current.as_deref().is_some_and(|c| c != fid) {
+                        bail!("frame {fid} is stale; take a new screenshot and use its coordinates");
+                    }
+                }
+                let mut clicked = Vec::with_capacity(targets.len());
+                for (i, pt) in targets.iter().enumerate() {
+                    let (nx, ny) = self.to_native(local, client_id, pt.x, pt.y)?;
+                    local.mouse_move(nx, ny)?;
+                    local.click_hold(60, 150)?;
+                    clicked.push(json!({ "x": pt.x, "y": pt.y, "index": i }));
+                }
+                Ok(ToolResult::ok(json!({
+                    "clicked": clicked,
+                    "count": targets.len(),
+                    "describe": describe,
+                })))
+            }
+            ToolCall::ChallengeHandoff { reason } => {
+                let watch = crate::liveview::watch_url();
+                let takeover = crate::liveview::takeover_url();
+                Ok(ToolResult::ok(json!({
+                    "status": "waiting_for_user",
+                    "reason": reason.as_deref().unwrap_or("challenge requires human input"),
+                    "takeover_url": takeover,
+                    "watch_url": watch,
+                    "instructions": "Open the takeover URL in your browser and solve the challenge. Take a fresh screenshot after the user confirms they are done.",
+                })))
+            }
             other => bail!("{} is not a device tool", tool_name(other)),
         }
     }
@@ -1153,6 +1231,64 @@ impl ToolHandler {
         }))
     }
 
+    fn persona_generate(&self, name: &str, country: &str) -> Res {
+        taboom_core::check_name(name)?;
+        if country.len() != 2 || !country.bytes().all(|b| b.is_ascii_uppercase()) {
+            bail!("country must be a two-letter uppercase ISO code such as DE");
+        }
+        let dir = self.home.join("personas");
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{name}.toml"));
+        if path.exists() {
+            bail!("persona {name} already exists");
+        }
+        let seed = rand::random::<u64>() & i64::MAX as u64;
+        let persona = taboom_core::persona::derive_persona(name, country, seed)?;
+        let serialized = toml::to_string_pretty(&persona)?;
+        let mut temp = tempfile::Builder::new()
+            .prefix(".taboom-persona-")
+            .tempfile_in(&dir)?;
+        std::io::Write::write_all(&mut temp, serialized.as_bytes())?;
+        temp.as_file().sync_all()?;
+        temp.persist_noclobber(&path).map_err(|e| {
+            if path.exists() {
+                anyhow!("persona {name} already exists")
+            } else {
+                anyhow::Error::new(e.error)
+            }
+        })?;
+        Ok(ToolResult::ok(json!({
+            "created": path.display().to_string(),
+            "name": name,
+            "country": country,
+            "seed": seed,
+        })))
+    }
+
+    fn persona_list(&self) -> Res {
+        let dir = self.home.join("personas");
+        let mut personas = Vec::new();
+        if dir.is_dir() {
+            for entry in std::fs::read_dir(&dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                    continue;
+                }
+                let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+                let text = std::fs::read_to_string(&path)?;
+                let country = text.lines()
+                    .find_map(|line| line.strip_prefix("country").and_then(|r| r.trim_start().strip_prefix('=')).map(|v| v.trim().trim_matches('"').to_string()))
+                    .unwrap_or_default();
+                let profile = self.home.join("profiles").join(&name).join("Default");
+                let has_profile = profile.exists();
+                personas.push(json!({ "name": name, "country": country, "has_profile": has_profile }));
+            }
+        }
+        personas.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        Ok(ToolResult::ok(json!({ "personas": personas })))
+    }
+
     /// One agent at a time; the layout's character map is read from vinput here, once.
     fn session_start(&self, client_id: &str) -> ToolResult {
         if let Some(refusal) = self.route_refusal() {
@@ -1173,6 +1309,45 @@ impl ToolHandler {
         self.local.set_seed(self.persona.seed());
         ToolResult::ok(json!({ "status": "started", "lease_id": lease_id, "persona": self.persona.name }))
     }
+
+    fn detect_challenge(&self, local: &LocalExecutor, client_id: &str, region: Option<&ToolRegion>) -> Res {
+        let (view, lines) = self.ocr_lines(local, client_id, region, None)?;
+        let all_text = lines.iter().map(|l| normalize_ocr_text(&l.text)).collect::<Vec<_>>().join(" ");
+
+        let challenge_type = detect_challenge_type(&all_text);
+        let cue_lines: Vec<Value> = lines.iter()
+            .filter(|l| is_challenge_cue(&normalize_ocr_text(&l.text)))
+            .map(|l| ocr_line_json(&view, l))
+            .collect();
+
+        let suggestion = match challenge_type.as_str() {
+            "checkbox" => "Use challenge_click_hold on the checkbox element",
+            "press_hold" => "Use challenge_click_hold with hold_ms_min=1500 hold_ms_max=3000 on the button",
+            "slider" => "Use challenge_slider to drag the slider from its handle to the target position",
+            "image_grid" => "Use challenge_select with the coordinates of each matching tile, or challenge_handoff if you cannot identify them",
+            "counting" => "Use zoom to count the objects, then challenge_select to click the correct answer option",
+            "icon_select" => "Use challenge_select with the coordinates of each icon in the correct order",
+            "letter_place" => "Use challenge_handoff; letter placement requires drag precision and human judgment",
+            "drag_place" => "Use challenge_handoff; 2D drag-to-position requires precise placement beyond current tools",
+            "puzzle" => "Use challenge_handoff; puzzle CAPTCHAs (3D rotation, match-three, gobang) require human judgment",
+            "audio" => "Use challenge_handoff; audio challenges require listening capability",
+            "text" => "Use zoom to read the CAPTCHA text, then type the answer",
+            "proof_of_work" => "Wait 5-10 seconds for the browser to solve the proof-of-work challenge automatically",
+            "device_check" => "Wait 3-5 seconds for the device check to complete, then take a screenshot",
+            "qr_code" => "Use challenge_handoff; QR code challenges require a physical phone to scan",
+            "turnstile" => "Wait for the Turnstile to resolve automatically; if it shows a checkbox, use challenge_click_hold",
+            _ => "No challenge detected; proceed with the task",
+        };
+
+        Ok(ToolResult::ok(json!({
+            "challenge_type": challenge_type,
+            "detected_cues": cue_lines,
+            "suggestion": suggestion,
+            "all_text_sample": &all_text[..all_text.len().min(500)],
+        })))
+    }
+
+
 
     fn route_refusal(&self) -> Option<ToolResult> {
         let health = self.route.health();
@@ -1207,7 +1382,9 @@ fn hand_use(call: &ToolCall) -> Option<bool> {
         ToolCall::Type { .. } | ToolCall::Key { .. } | ToolCall::KeyDown { .. }
         | ToolCall::KeyUp { .. } | ToolCall::HoldKey { .. } | ToolCall::OpenUrl { .. } => Some(true),
         ToolCall::Click { .. } | ToolCall::Move { .. } | ToolCall::Drag { .. }
-        | ToolCall::Scroll { .. } | ToolCall::MouseDown { .. } | ToolCall::MouseUp { .. } => Some(false),
+        | ToolCall::Scroll { .. } | ToolCall::MouseDown { .. } | ToolCall::MouseUp { .. }
+        | ToolCall::ChallengeClickHold { .. } | ToolCall::ChallengeSlider { .. }
+        | ToolCall::ChallengeSelect { .. } => Some(false),
         _ => None,
     }
 }
@@ -1805,6 +1982,134 @@ fn parse_tesseract_tsv(tsv: &str, origin: (u32, u32)) -> Result<Vec<OcrLine>> {
     }).collect())
 }
 
+const CHALLENGE_PATTERNS: &[(&str, &str)] = &[
+    // --- press-and-hold (before checkbox so "hold" isn't swallowed) ---
+    ("press and hold", "press_hold"),
+    ("press & hold", "press_hold"),
+    ("hold down", "press_hold"),
+    ("tap and hold", "press_hold"),
+    ("long press", "press_hold"),
+
+    // --- image grid ---
+    ("select all images", "image_grid"),
+    ("select all squares", "image_grid"),
+    ("click on all images", "image_grid"),
+    ("pick the images", "image_grid"),
+    ("select each image", "image_grid"),
+    ("click verify once there are none left", "image_grid"),
+    ("click all matching images", "image_grid"),
+    ("select the image that is not", "image_grid"),
+    ("how many", "counting"),
+
+    // --- icon / ordering challenges (hCaptcha, GeeTest) ---
+    ("click on the icons", "icon_select"),
+    ("click the icons", "icon_select"),
+    ("select the icons", "icon_select"),
+    ("click in the correct order", "icon_select"),
+    ("click them in order", "icon_select"),
+    ("click each icon", "icon_select"),
+    ("in the order shown", "icon_select"),
+    ("tap the icons", "icon_select"),
+    ("please click on the", "icon_select"),
+    ("please click each", "icon_select"),
+    ("match the shadow", "icon_select"),
+
+    // --- letter / character placement (hCaptcha variants) ---
+    ("place the letters", "letter_place"),
+    ("drag the letters", "letter_place"),
+    ("drag each letter", "letter_place"),
+    ("put the letters in order", "letter_place"),
+    ("arrange the letters", "letter_place"),
+    ("place the characters", "letter_place"),
+
+    // --- drag-to-position (2D free drag, hCaptcha / GeeTest) ---
+    ("drag the image", "drag_place"),
+    ("drag to the correct", "drag_place"),
+    ("drag the piece", "drag_place"),
+    ("move the piece", "drag_place"),
+    ("drag it to", "drag_place"),
+
+    // --- slider ---
+    ("slide to verify", "slider"),
+    ("drag the slider", "slider"),
+    ("slide to complete", "slider"),
+    ("drag to verify", "slider"),
+    ("slide the puzzle", "slider"),
+    ("drag the puzzle", "slider"),
+    ("swipe to verify", "slider"),
+
+    // --- puzzle (rotation, jigsaw, 3D, match-three, gobang) ---
+    ("rotate the image", "puzzle"),
+    ("rotate to match", "puzzle"),
+    ("rotate the object", "puzzle"),
+    ("match the orientation", "puzzle"),
+    ("put the pieces", "puzzle"),
+    ("jigsaw", "puzzle"),
+    ("3d object", "puzzle"),
+    ("funcaptcha", "puzzle"),
+    ("arkoselabs", "puzzle"),
+    ("match three", "puzzle"),
+    ("five in a row", "puzzle"),
+    ("arrange the tiles", "puzzle"),
+    ("tile order", "puzzle"),
+    ("which direction", "puzzle"),
+    ("match the dice", "puzzle"),
+
+    // --- audio ---
+    ("listen and type", "audio"),
+    ("audio challenge", "audio"),
+    ("press play to listen", "audio"),
+    ("type what you hear", "audio"),
+
+    // --- text entry ---
+    ("type the characters", "text"),
+    ("type the text", "text"),
+    ("enter the code", "text"),
+    ("type the letters", "text"),
+    ("enter the characters", "text"),
+    ("type what you see", "text"),
+
+    // --- proof of work / device check (auto-resolving) ---
+    ("solving a challenge", "proof_of_work"),
+    ("computing", "proof_of_work"),
+    ("friendly captcha", "proof_of_work"),
+    ("device check", "device_check"),
+
+    // --- QR code (reCAPTCHA 2026) ---
+    ("scan the qr code", "qr_code"),
+    ("scan this code", "qr_code"),
+    ("use your phone", "qr_code"),
+
+    // --- turnstile / invisible ---
+    ("verify you are human", "turnstile"),
+    ("checking your browser", "turnstile"),
+    ("checking if the site", "turnstile"),
+    ("cloudflare", "turnstile"),
+    ("managed challenge", "turnstile"),
+
+    // --- checkbox (generic, last so specific patterns win) ---
+    ("i'm not a robot", "checkbox"),
+    ("i am not a robot", "checkbox"),
+    ("not a robot", "checkbox"),
+    ("recaptcha", "checkbox"),
+    ("captcha", "checkbox"),
+    ("security check", "checkbox"),
+    ("human verification", "checkbox"),
+];
+
+fn detect_challenge_type(text: &str) -> String {
+    for (pattern, challenge_type) in CHALLENGE_PATTERNS {
+        if text.contains(pattern) {
+            return (*challenge_type).to_string();
+        }
+    }
+    "none".to_string()
+}
+
+fn is_challenge_cue(text: &str) -> bool {
+    CHALLENGE_PATTERNS.iter().any(|(pattern, _)| text.contains(pattern))
+}
+
 fn safe_file_name(name: &str) -> anyhow::Result<&str> {
     let base = Path::new(name).file_name().and_then(|n| n.to_str()).unwrap_or_default();
     if base.is_empty() || base.starts_with('.') || base != name {
@@ -1864,7 +2169,7 @@ mod tests {
         let route = Arc::new(Monitor::new(Arc::clone(&persona), None, GeoLookup::open(home)));
         route.set(health(route_ok, if route_ok { "ok" } else { "exit IP is in NL" }));
         let recorder = Arc::new(Recorder::open(home, "http://localhost:3456".into()).unwrap());
-        ToolHandler::new(persona, route, recorder, local)
+        ToolHandler::new(persona, route, recorder, local, home.to_path_buf())
     }
 
     fn health(ok: bool, detail: &str) -> Health {

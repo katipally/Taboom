@@ -30,6 +30,7 @@ age = { workspace = true }
 ciborium = { workspace = true }
 taboom-humanizer = { path = "../taboom-humanizer" }
 taboom-core = { path = "../taboom-core" }
+tempfile = { workspace = true }
 nix = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["fs"] }
@@ -38,4 +39,3 @@ base64 = { workspace = true }
 tokio-stream = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }

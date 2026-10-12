@@ -121,6 +121,11 @@ pub enum ToolCall {
     SessionStart,
     SessionEnd,
     PersonaStatus,
+    PersonaGenerate {
+        name: String,
+        country: String,
+    },
+    PersonaList,
     ViewUrl,
     RecordingList {
         #[serde(default)]
@@ -145,6 +150,36 @@ pub enum ToolCall {
         id: Option<String>,
         #[serde(default)]
         expires_in_s: Option<u64>,
+    },
+    DetectChallenge {
+        #[serde(default)]
+        region: Option<ToolRegion>,
+    },
+    ChallengeClickHold {
+        x: i32,
+        y: i32,
+        describe: String,
+        #[serde(default)]
+        frame_id: Option<String>,
+        #[serde(default)]
+        hold_ms_min: Option<u64>,
+        #[serde(default)]
+        hold_ms_max: Option<u64>,
+    },
+    ChallengeSlider {
+        from: Point,
+        to: Point,
+        describe: String,
+    },
+    ChallengeSelect {
+        targets: Vec<Point>,
+        describe: String,
+        #[serde(default)]
+        frame_id: Option<String>,
+    },
+    ChallengeHandoff {
+        #[serde(default)]
+        reason: Option<String>,
     },
     Computer {
         action: String,
@@ -662,6 +697,23 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolDef {
+            name: "persona_generate".into(),
+            description: "Create a new persona TOML file with country defaults, a random seed, and a warm browser profile. The persona can be used by starting a new container with TABOOM_PERSONA=<name>".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "1-64 chars of A-Z a-z 0-9 _ -" },
+                    "country": { "type": "string", "description": "ISO 3166 alpha-2, e.g. US, DE, JP" }
+                },
+                "required": ["name", "country"]
+            }),
+        },
+        ToolDef {
+            name: "persona_list".into(),
+            description: "List all persona TOML files in this container's data volume with their country and whether a browser profile directory exists".into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDef {
             name: "view_url".into(),
             description: "Get the live view URL for this container's desktop".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
@@ -699,6 +751,96 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "id": { "type": "string" },
                     "expires_in_s": { "type": "number", "description": "default 604800 (7 days)" }
+                }
+            }),
+        },
+        ToolDef {
+            name: "detect_challenge".into(),
+            description: "Detect whether the current screen shows a CAPTCHA or verification challenge. Uses OCR and screenshot analysis to identify the challenge type: checkbox (reCAPTCHA v2 'I'm not a robot'), image_grid (pick matching images), slider (drag to verify), text (type distorted characters), press_hold (press and hold button), turnstile (Cloudflare managed challenge), puzzle (rotation, jigsaw), or none. Returns the type, detected text cues, and suggested next action.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "region": {
+                        "type": "object",
+                        "description": "Narrow the search to a region in the latest screenshot's pixel space",
+                        "properties": {
+                            "x": { "type": "number" },
+                            "y": { "type": "number" },
+                            "w": { "type": "number" },
+                            "h": { "type": "number" }
+                        },
+                        "required": ["x", "y", "w", "h"]
+                    }
+                }
+            }),
+        },
+        ToolDef {
+            name: "challenge_click_hold".into(),
+            description: "Click and hold at (x,y) with human-realistic timing for CAPTCHA checkboxes and press-and-hold verification buttons. The hold includes micro cursor drift during the press, matching how a real hand behaves. Default hold 800-2000ms; override with hold_ms_min/hold_ms_max.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "x": { "type": "number" },
+                    "y": { "type": "number" },
+                    "describe": { "type": "string", "description": "What you intend to do, e.g. 'Click the I am not a robot checkbox'" },
+                    "frame_id": { "type": "string" },
+                    "hold_ms_min": { "type": "number", "description": "Minimum hold duration in ms (default 800)" },
+                    "hold_ms_max": { "type": "number", "description": "Maximum hold duration in ms (default 2000)" }
+                },
+                "required": ["x", "y", "describe"]
+            }),
+        },
+        ToolDef {
+            name: "challenge_slider".into(),
+            description: "Drag a slider from one point to another with human-realistic overshoot and correction, for slide-to-verify CAPTCHAs (GeeTest, custom sliders). The motion overshoots the target, pauses, then corrects back, with natural jitter throughout.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "from": {
+                        "type": "object",
+                        "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
+                        "required": ["x", "y"]
+                    },
+                    "to": {
+                        "type": "object",
+                        "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
+                        "required": ["x", "y"]
+                    },
+                    "describe": { "type": "string", "description": "What you intend to do, e.g. 'Slide the puzzle piece to the gap'" }
+                },
+                "required": ["from", "to", "describe"]
+            }),
+        },
+        ToolDef {
+            name: "challenge_select".into(),
+            description: "Click multiple targets in sequence with human-paced timing. For image grid CAPTCHAs (select all matching tiles), icon challenges (click icons in order), or any multi-click challenge. Each target is moved to, clicked, and followed by a natural pause before the next. Handles 1-20 targets in a single call.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "targets": {
+                        "type": "array",
+                        "description": "Ordered list of points to click",
+                        "items": {
+                            "type": "object",
+                            "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
+                            "required": ["x", "y"]
+                        },
+                        "minItems": 1,
+                        "maxItems": 20
+                    },
+                    "describe": { "type": "string", "description": "What you intend to do, e.g. 'Select the 3 images containing traffic lights'" },
+                    "frame_id": { "type": "string" }
+                },
+                "required": ["targets", "describe"]
+            }),
+        },
+        ToolDef {
+            name: "challenge_handoff".into(),
+            description: "Pause the agent and ask the user to solve a challenge manually via the live VNC view. Use this when the agent detects a challenge it cannot solve (image grids, 3D rotation puzzles, complex CAPTCHAs). Returns the takeover URL for the user. The agent should wait for user confirmation before continuing.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "reason": { "type": "string", "description": "Why the agent needs help, e.g. 'Image grid CAPTCHA detected that requires human judgment'" }
                 }
             }),
         },

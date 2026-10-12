@@ -489,6 +489,28 @@ impl LocalExecutor {
         Ok(())
     }
 
+    pub fn click_hold(&self, hold_ms_min: u64, hold_ms_max: u64) -> Result<()> {
+        let plan = self.humanized(|h, rng| click::plan_click_hold(hold_ms_min, hold_ms_max, &h.style, rng));
+        self.play(&plan, Axis::Vertical)
+    }
+
+    pub fn slider_drag(&self, from: (u32, u32), to: (u32, u32)) -> Result<()> {
+        let start = self.mouse_move(from.0, from.1)?;
+        let end = self.landing(to.0, to.1, self.screen()?);
+        let plan = self.humanized(|h, rng| {
+            drag::plan_slider_drag((start.0 as f64, start.1 as f64), (end.0 as f64, end.1 as f64), &h.style, rng)
+        });
+        let played = self.play(&plan, Axis::Vertical);
+        if played.is_err() {
+            let _ = self.cmd("btn 0 0".into());
+        }
+        played?;
+        if self.cursor()? != end {
+            self.cmd(format!("abs {} {}", end.0, end.1))?;
+        }
+        Ok(())
+    }
+
     /// Wheel notches in bursts with reading pauses. Positive scrolls down / right.
     pub fn scroll(&self, x: u32, y: u32, delta_x: i32, delta_y: i32) -> Result<()> {
         self.mouse_move(x, y)?;

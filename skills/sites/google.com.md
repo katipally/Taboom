@@ -5,16 +5,14 @@ Applies to: `google.com`, `accounts.google.com`, `mail.google.com`
 ## Cookie consent (EU/EEA visitors)
 
 Google shows a consent dialog before the search page loads.
-- Look for "Reject all" button, click it
-- If only "I agree" or "Accept all", click "Reject all" if present; otherwise accept
+- Read the available choices and follow the user's privacy preference. If it is unclear, ask.
 
 ## Search
 
-1. The search input is centered on the page at roughly (960, 500) on a 1920x1080 screen
-2. Click the search box (or just start typing; Google auto-focuses)
-3. Type the query
-4. Press Enter (do not click "Google Search" button; Enter is faster)
-5. Wait for results page to settle
+1. Take a fresh screenshot and locate the search input in that image.
+2. Click it, then enter the query with the Taboom `type` tool.
+3. Press Enter with the `key` tool.
+4. Wait for the results page to settle and verify it with a fresh screenshot.
 
 ## Search results page
 
@@ -27,14 +25,13 @@ Google shows a consent dialog before the search page loads.
 
 1. Email field appears first; type the email, press Enter
 2. Wait for the password field to appear (animated transition, ~500ms)
-3. Use `SecretTypeRequest` for the password
-4. If 2FA is required, wait for the prompt, then use TOTP `SecretTypeRequest`
+3. Use the Taboom `type` tool with `<secret>name</secret>` for the password.
+4. If 2FA is required, wait for the prompt, then use a TOTP `<secret>name</secret>` immediately.
 5. After login, Google may show a "stay signed in" prompt; click "No thanks" or close
 
 ## Gmail (mail.google.com)
 
-- Compose: click the "Compose" button (top-left, below the Gmail logo)
-- The compose window appears in the bottom-right corner
-- To field auto-completes; type the address and press Tab or Enter
-- Subject field is next; type and Tab to body
-- Body is a rich text editor; plain typing works
+- Compose: locate and click the "Compose" button in a fresh screenshot.
+- The compose window's position can vary with viewport size.
+- Use the visible field order to enter recipient, subject, and body.
+- Take a screenshot before sending and confirm recipients and content.

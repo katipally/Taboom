@@ -2,6 +2,9 @@
 
 You are controlling a real computer through Taboom. These rules keep you effective and safe.
 
+This guide is also available from the MCP server as `taboom://skills/SKILL.md`. Site notes are
+available as `taboom://skills/sites/<filename>`.
+
 ## Ground Truth
 
 The screenshot is your ground truth. Always take a fresh screenshot to verify the result of any action before declaring it done.
@@ -32,9 +35,9 @@ Never type secrets directly. Use the placeholder syntax:
 <secret>secret-name</secret>
 ```
 
-Taboom resolves placeholders from its unlocked age-encrypted vault. The operator must add each
+Taboom resolves placeholders from its unlocked encrypted vault. The operator must add each
 credential with `taboom vault add`; never include a value in an MCP call, shell argument, or your
-conversation. TOTP seeds resolve to the current code. The type tool checks the current hostname
+conversation. TOTP seeds resolve to the current code. The `type` tool checks the current hostname
 against the item's allow-list, including exact and subdomain matches; an empty list denies use.
 
 Secret typing requires a healthy route and a focused Chrome window that is not fullscreen. HTTP
@@ -68,6 +71,9 @@ The live view remains visible to a person who opens it.
 
 `click` and `drag` require the `describe` field. Write what you intend to accomplish, not what you are clicking. Good: "Click the Submit button to save the form". Bad: "Click at 450,320".
 
+Use the native Taboom tools shown by `tools/list`. For credentials, use the `type` tool with the
+`<secret>name</secret>` placeholder. Do not rely on tool names from other browser-control APIs.
+
 ## Settling
 
 After actions that trigger page loads or animations, use `wait { until_settled: true }` before taking a screenshot. This avoids capturing mid-transition frames.
@@ -80,7 +86,8 @@ Screenshots are scaled (longest edge 1280 by default). Always click in the pixel
 
 ## Navigating
 
-Use `open_url` to go to a page, or `ctrl+l`, type the address, and `submit`.
+Use `open_url` to go to a page. To navigate manually, press `ctrl+l`, type the address, then press
+Enter with the `key` tool.
 
 ## Desktop
 
@@ -95,6 +102,26 @@ This Taboom container is exactly one persona, with its own Chrome profile (cooki
 ## Recordings
 
 Sessions have a step log. Before secret typing, screen video and frames are recorded. Secret typing stops the video before the keys are pressed and disables all later visual capture for the rest of the persistent data volume; `recording_get` will not return images after this state begins. Share only existing video that ends before the secret action.
+
+## Challenge / CAPTCHA Handling
+
+When a verification challenge blocks progress:
+
+1. Call `detect_challenge` (optionally with a `region` to narrow OCR). It returns `challenge_type`
+   and a `suggestion` for which tool to use next. For the full decision tree, read the
+   `challenge_flow` prompt via `prompts/get`.
+2. For checkbox or press-and-hold: use `challenge_click_hold` at the element center.
+   Pass `hold_ms_min`/`hold_ms_max` for press-and-hold (1500/3000 is a good default).
+3. For slider puzzles: use `challenge_slider` with `from` (handle) and `to` (target) points.
+4. For image grids, icon challenges, or counting tasks: use `challenge_select` with all target
+   coordinates in one call. Clicks each point with human-paced delays between them.
+5. For auto-resolving types (turnstile, proof_of_work, device_check): wait 5-10 seconds,
+   then screenshot to confirm.
+6. For text CAPTCHAs: `zoom` to read the characters, then `type` the answer.
+7. For everything else (letter_place, drag_place, puzzle, audio, qr_code): call
+   `challenge_handoff` with a `reason`.
+
+After any challenge action, take a screenshot to confirm the challenge cleared before continuing.
 
 ## Manual User Control
 

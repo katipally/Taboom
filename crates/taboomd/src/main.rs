@@ -114,7 +114,7 @@ async fn serve(env: DaemonEnv) -> Result<()> {
     let recorder = Arc::new(recording::Recorder::open(&env.home, public_url)?);
 
     let handler = Arc::new(
-        handler::ToolHandler::new(persona, monitor, recorder, local).with_secret_context(
+        handler::ToolHandler::new(persona, monitor, recorder, local, env.home.clone()).with_secret_context(
             Arc::clone(&vault),
             Arc::clone(&audit_log),
             Arc::new(cdp::CdpPageTargets::new(&env.home)),

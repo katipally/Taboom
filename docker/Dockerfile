@@ -15,6 +15,7 @@ RUN TABOOM_ENGINES="$TABOOM_ENGINES" TARGETARCH="$TARGETARCH" BUILDARCH="$BUILDA
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+COPY skills/ skills/
 
 RUN cargo build --release --bin taboomd --bin taboom
 
