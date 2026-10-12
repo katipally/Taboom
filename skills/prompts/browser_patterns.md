@@ -13,7 +13,14 @@ screenshot
 session_end
 ```
 
-## Fill a form field
+## Fill visible form fields in one flow
+
+Observe the form once, then use `batch_actions` with the latest `frame_id` and ordered native
+steps (`tool`, plus each tool's arguments). Fill all predictable visible fields, verify the returned
+screenshot, and submit separately. Stop before an unknown menu, autocomplete choice or page change.
+This avoids a model round trip after every field. See `form_fill_flow` for the full sequence.
+
+## Fill or correct one field
 
 ```
 screenshot                                    [find the field]
@@ -63,7 +70,7 @@ screenshot                                    [verify popup is gone]
 click { x, y, describe: "Click download button" }
 wait { ms: 3000 }                             [wait for download]
 files_list                                    [check downloads]
-files_get { path: "/path/to/file.pdf" }       [retrieve the file]
+files_get { path: "file.pdf" }       [retrieve the file]
 ```
 
 ## Upload a file
@@ -73,7 +80,7 @@ files_put { name: "document.pdf", data_base64: "..." }  [stage the file]
 click { x, y, describe: "Click Choose File button" }
 wait { until_settled: true }                             [file dialog opens]
 screenshot                                               [see the dialog]
-type { text: "/uploads/document.pdf" }                   [type the path]
+type { text: "<path returned by files_put>" }            [use the actual staged path]
 key { combo: "Enter" }                                   [confirm selection]
 wait { ms: 1000 }
 screenshot                                               [verify file selected]

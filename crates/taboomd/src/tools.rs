@@ -11,6 +11,10 @@ pub struct ToolDef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "tool", rename_all = "snake_case")]
 pub enum ToolCall {
+    BatchActions {
+        actions: Vec<ToolCall>,
+        frame_id: String,
+    },
     Screenshot {
         #[serde(default)]
         frame_id: Option<String>,
@@ -387,22 +391,22 @@ fn coords(coordinate: &Option<Vec<i32>>) -> Option<(i32, i32)> {
 }
 
 pub fn all_tool_defs() -> Vec<ToolDef> {
-    vec![
+    let mut defs = vec![
         ToolDef {
             name: "screenshot".into(),
-            description: "Capture the screen. The image is scaled so its longest edge is at most max_edge (default 1280). All x/y you pass to click, move, drag, scroll and zoom are in the pixel space of the latest full screenshot; Taboom maps them to the real screen. A region screenshot is for looking only and does not change that space. After vault secret typing, screenshots stay disabled for the persistent data volume.".into(),
+            description: "Capture the screen. The image is scaled so its longest edge is at most max_edge (default 1280). All x/y you pass to click, move, drag, scroll and zoom are in the pixel space of the latest full screenshot; Taboom maps them to the real screen. A region screenshot is for looking only and does not change that space. Live screenshots remain available after vault secret typing and can expose visible credentials; saved frames and video resume after typing and may contain visible credentials.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "frame_id": { "type": "string", "description": "Unused on capture; returned ids go to click.frame_id" },
-                    "max_edge": { "type": "number", "description": "Longest edge of the returned image, 200-4096 (default 1280)" },
+                    "max_edge": { "type": "integer", "description": "Longest edge of the returned image, 200-4096 (default 1280)" },
                     "region": {
                         "type": "object",
                         "properties": {
-                            "x": { "type": "number" },
-                            "y": { "type": "number" },
-                            "w": { "type": "number" },
-                            "h": { "type": "number" }
+                            "x": { "type": "integer" },
+                            "y": { "type": "integer" },
+                            "w": { "type": "integer" },
+                            "h": { "type": "integer" }
                         },
                         "required": ["x", "y", "w", "h"]
                     }
@@ -411,17 +415,17 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "zoom".into(),
-            description: "Crop a region (in latest-screenshot coordinates) and return it at full native resolution, to read small text. Disabled after vault secret typing for the rest of the persistent data volume.".into(),
+            description: "Crop a region (in latest-screenshot coordinates) and return it at full native resolution, to read small text. Remains available after vault secret typing; visible credentials can appear in live responses.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "region": {
                         "type": "object",
                         "properties": {
-                            "x": { "type": "number" },
-                            "y": { "type": "number" },
-                            "w": { "type": "number" },
-                            "h": { "type": "number" }
+                            "x": { "type": "integer" },
+                            "y": { "type": "integer" },
+                            "w": { "type": "integer" },
+                            "h": { "type": "integer" }
                         },
                         "required": ["x", "y", "w", "h"]
                     }
@@ -431,7 +435,7 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "find_text".into(),
-            description: "Find visible text with local OCR. Returns matching OCR lines and their boxes in the latest full screenshot's pixel space. An optional region uses those same coordinates. Disabled after vault secret typing for the rest of the persistent data volume.".into(),
+            description: "Find visible text with local OCR. Returns matching OCR lines and their boxes in the latest full screenshot's pixel space. An optional region uses those same coordinates. Remains available after vault secret typing; visible credentials can appear in live responses.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -439,10 +443,10 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
                     "region": {
                         "type": "object",
                         "properties": {
-                            "x": { "type": "number" },
-                            "y": { "type": "number" },
-                            "w": { "type": "number" },
-                            "h": { "type": "number" }
+                            "x": { "type": "integer" },
+                            "y": { "type": "integer" },
+                            "w": { "type": "integer" },
+                            "h": { "type": "integer" }
                         },
                         "required": ["x", "y", "w", "h"]
                     }
@@ -452,17 +456,17 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "read_text".into(),
-            description: "Read visible text with local OCR. Returns lines and their boxes in the latest full screenshot's pixel space. An optional region uses those same coordinates. Disabled after vault secret typing for the rest of the persistent data volume.".into(),
+            description: "Read visible text with local OCR. Returns lines and their boxes in the latest full screenshot's pixel space. An optional region uses those same coordinates. Remains available after vault secret typing; visible credentials can appear in live responses.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "region": {
                         "type": "object",
                         "properties": {
-                            "x": { "type": "number" },
-                            "y": { "type": "number" },
-                            "w": { "type": "number" },
-                            "h": { "type": "number" }
+                            "x": { "type": "integer" },
+                            "y": { "type": "integer" },
+                            "w": { "type": "integer" },
+                            "h": { "type": "integer" }
                         },
                         "required": ["x", "y", "w", "h"]
                     }
@@ -480,10 +484,10 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "x": { "type": "number" },
-                    "y": { "type": "number" },
+                    "x": { "type": "integer" },
+                    "y": { "type": "integer" },
                     "button": { "type": "string", "enum": ["left", "right", "middle"] },
-                    "count": { "type": "number" },
+                    "count": { "type": "integer" },
                     "describe": { "type": "string" },
                     "frame_id": { "type": "string" }
                 },
@@ -496,8 +500,8 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "x": { "type": "number" },
-                    "y": { "type": "number" },
+                    "x": { "type": "integer" },
+                    "y": { "type": "integer" },
                     "describe": { "type": "string" }
                 },
                 "required": ["x", "y"]
@@ -511,12 +515,12 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "from": {
                         "type": "object",
-                        "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
+                        "properties": { "x": { "type": "integer" }, "y": { "type": "integer" } },
                         "required": ["x", "y"]
                     },
                     "to": {
                         "type": "object",
-                        "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
+                        "properties": { "x": { "type": "integer" }, "y": { "type": "integer" } },
                         "required": ["x", "y"]
                     },
                     "describe": { "type": "string" }
@@ -530,17 +534,17 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "x": { "type": "number" },
-                    "y": { "type": "number" },
+                    "x": { "type": "integer" },
+                    "y": { "type": "integer" },
                     "direction": { "type": "string", "enum": ["up", "down", "left", "right"] },
-                    "amount": { "type": "number" }
+                    "amount": { "type": "integer" }
                 },
                 "required": ["direction", "amount"]
             }),
         },
         ToolDef {
             name: "type".into(),
-            description: "Type text into the focused element. mode: keys (real key presses), paste (clipboard + ctrl+v), auto (paste only for very long text). `<secret>NAME</secret>` resolves an unlocked, domain-allowed vault item and types it through the layout-aware keymap with no typo planner or clipboard. It requires a focused, non-fullscreen Chrome window and a healthy route. The private Chrome pipe runs Target.getTargets only and never attaches to a page; local OCR must read a confident hostname from the visible omnibox that matches an HTTPS page-host candidate. HTTP pages are refused, and a hidden scheme with same-host HTTP and HTTPS candidates is ambiguous and refused. Taboom cannot verify that the HTML input rather than the address bar has focus; click the intended page field and keep the page stable. After secret typing, screen images and video are disabled for the persistent data volume. `submit` presses Enter after typing; secret calls refuse paste mode.".into(),
+            description: "Type text into the focused element. mode: keys (real key presses), paste (clipboard + ctrl+v), auto (paste for very long text or characters unavailable on the active keyboard layout). `<secret>NAME</secret>` resolves an unlocked, domain-allowed vault item and types it through the layout-aware keymap with no typo planner or clipboard. It requires a focused, non-fullscreen Chrome window and a healthy route. The private Chrome pipe runs Target.getTargets only and never attaches to a page; local OCR must read a confident hostname from the visible omnibox that matches an HTTPS page-host candidate. HTTP pages are refused, and a hidden scheme with same-host HTTP and HTTPS candidates is ambiguous and refused. Taboom cannot verify that the HTML input rather than the address bar has focus; click the intended page field and keep the page stable. After secret typing, live screenshots, zoom and OCR remain available; saved recording frames and video resume afterward and may expose visible credentials. `submit` presses Enter after typing; secret calls refuse paste mode.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -569,8 +573,8 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
                 "type": "object",
                 "properties": {
                     "button": { "type": "string", "enum": ["left", "right", "middle"] },
-                    "x": { "type": "number" },
-                    "y": { "type": "number" }
+                    "x": { "type": "integer" },
+                    "y": { "type": "integer" }
                 }
             }),
         },
@@ -609,18 +613,18 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
                 "type": "object",
                 "properties": {
                     "key": { "type": "string" },
-                    "duration_ms": { "type": "number" }
+                    "duration_ms": { "type": "integer" }
                 },
                 "required": ["key"]
             }),
         },
         ToolDef {
             name: "wait".into(),
-            description: "Wait ms milliseconds, until the screen stops changing, or until local OCR finds until_text. For until_settled and until_text, ms is the cap (default 3000). Screen OCR is disabled after vault secret typing for the rest of the persistent data volume.".into(),
+            description: "Wait ms milliseconds, until the screen stops changing, or until local OCR finds until_text. For until_settled and until_text, ms is the cap (default 3000). Visual waits and OCR remain available after vault secret typing.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "ms": { "type": "number", "description": "0-60000" },
+                    "ms": { "type": "integer", "description": "0-60000" },
                     "until_settled": { "type": "boolean" },
                     "until_text": { "type": "string", "description": "Wait until this visible text appears; case-insensitive" }
                 }
@@ -720,12 +724,12 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "recording_list".into(),
-            description: "List recorded agent sessions, newest first. Every session (session_start to session_end) records each tool call and a frame after each action".into(),
+            description: "List recorded agent sessions, newest first. Every session records tool calls; saved frames and video pause during vault secret typing and resume afterward".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "persona": { "type": "string" },
-                    "limit": { "type": "number", "description": "default 20" }
+                    "limit": { "type": "integer", "description": "default 20" }
                 }
             }),
         },
@@ -736,9 +740,9 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
                 "type": "object",
                 "properties": {
                     "id": { "type": "string" },
-                    "step": { "type": "number" },
-                    "from_step": { "type": "number" },
-                    "limit": { "type": "number", "description": "default 50" },
+                    "step": { "type": "integer" },
+                    "from_step": { "type": "integer" },
+                    "limit": { "type": "integer", "description": "default 50" },
                     "frames": { "type": "boolean" }
                 }
             }),
@@ -750,13 +754,13 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
                 "type": "object",
                 "properties": {
                     "id": { "type": "string" },
-                    "expires_in_s": { "type": "number", "description": "default 604800 (7 days)" }
+                    "expires_in_s": { "type": "integer", "description": "default 604800 (7 days)" }
                 }
             }),
         },
         ToolDef {
             name: "detect_challenge".into(),
-            description: "Detect whether the current screen shows a CAPTCHA or verification challenge. Uses OCR and screenshot analysis to identify the challenge type: checkbox (reCAPTCHA v2 'I'm not a robot'), image_grid (pick matching images), slider (drag to verify), text (type distorted characters), press_hold (press and hold button), turnstile (Cloudflare managed challenge), puzzle (rotation, jigsaw), or none. Returns the type, detected text cues, and suggested next action.".into(),
+            description: "Detect whether the current screen shows a CAPTCHA or verification challenge. Uses local OCR text cues to suggest a challenge type; the external agent must inspect screenshots to confirm: checkbox (reCAPTCHA v2 'I'm not a robot'), image_grid (pick matching images), slider (drag to verify), text (type distorted characters), press_hold (press and hold button), turnstile (Cloudflare managed challenge), puzzle (rotation, jigsaw), or none. Returns the type, detected text cues, and suggested next action.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -764,10 +768,10 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
                         "type": "object",
                         "description": "Narrow the search to a region in the latest screenshot's pixel space",
                         "properties": {
-                            "x": { "type": "number" },
-                            "y": { "type": "number" },
-                            "w": { "type": "number" },
-                            "h": { "type": "number" }
+                            "x": { "type": "integer" },
+                            "y": { "type": "integer" },
+                            "w": { "type": "integer" },
+                            "h": { "type": "integer" }
                         },
                         "required": ["x", "y", "w", "h"]
                     }
@@ -780,12 +784,12 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "x": { "type": "number" },
-                    "y": { "type": "number" },
+                    "x": { "type": "integer" },
+                    "y": { "type": "integer" },
                     "describe": { "type": "string", "description": "What you intend to do, e.g. 'Click the I am not a robot checkbox'" },
                     "frame_id": { "type": "string" },
-                    "hold_ms_min": { "type": "number", "description": "Minimum hold duration in ms (default 800)" },
-                    "hold_ms_max": { "type": "number", "description": "Maximum hold duration in ms (default 2000)" }
+                    "hold_ms_min": { "type": "integer", "description": "Minimum hold duration in ms (default 800)" },
+                    "hold_ms_max": { "type": "integer", "description": "Maximum hold duration in ms (default 2000)" }
                 },
                 "required": ["x", "y", "describe"]
             }),
@@ -798,12 +802,12 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "from": {
                         "type": "object",
-                        "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
+                        "properties": { "x": { "type": "integer" }, "y": { "type": "integer" } },
                         "required": ["x", "y"]
                     },
                     "to": {
                         "type": "object",
-                        "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
+                        "properties": { "x": { "type": "integer" }, "y": { "type": "integer" } },
                         "required": ["x", "y"]
                     },
                     "describe": { "type": "string", "description": "What you intend to do, e.g. 'Slide the puzzle piece to the gap'" }
@@ -822,7 +826,7 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
                         "description": "Ordered list of points to click",
                         "items": {
                             "type": "object",
-                            "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
+                            "properties": { "x": { "type": "integer" }, "y": { "type": "integer" } },
                             "required": ["x", "y"]
                         },
                         "minItems": 1,
@@ -857,18 +861,40 @@ pub fn all_tool_defs() -> Vec<ToolDef> {
                         "type", "key", "hold_key", "cursor_position", "scroll",
                         "scroll_up", "scroll_down", "wait", "zoom"
                     ]},
-                    "coordinate": { "type": "array", "items": { "type": "number" } },
-                    "start_coordinate": { "type": "array", "items": { "type": "number" } },
+                    "coordinate": { "type": "array", "items": { "type": "integer" } },
+                    "start_coordinate": { "type": "array", "items": { "type": "integer" } },
                     "text": { "type": "string" },
                     "scroll_direction": { "type": "string", "enum": ["up", "down", "left", "right"] },
-                    "scroll_amount": { "type": "number" },
+                    "scroll_amount": { "type": "integer" },
                     "duration": { "type": "number", "description": "seconds, for wait and hold_key" },
-                    "region": { "type": "array", "items": { "type": "number" }, "description": "[x0, y0, x1, y1], for zoom" }
+                    "region": { "type": "array", "items": { "type": "integer" }, "description": "[x0, y0, x1, y1], for zoom" }
                 },
                 "required": ["action"]
             }),
         },
-    ]
+    ];
+    let allowed = ["click", "move", "type", "key", "scroll", "wait"];
+    let variants: Vec<Value> = defs.iter().filter(|d| allowed.contains(&d.name.as_str())).map(|d| {
+        let mut schema = d.input_schema.clone();
+        schema["properties"]["tool"] = json!({"const": d.name});
+        schema["required"].as_array_mut().map(|r| r.push(json!("tool"))).unwrap_or_else(|| {
+            schema["required"] = json!(["tool"]);
+        });
+        schema
+    }).collect();
+    defs.push(ToolDef {
+        name: "batch_actions".into(),
+        description: "Execute 1-64 planned mouse/keyboard actions in order without model round trips, then wait for settling and return a fresh screenshot. Use for visible forms and predictable sequences based on the supplied latest frame_id. Each action uses native arguments plus a tool field. Stops on the first error and reports completed steps; never automatically retries. Break the sequence at navigation, unknown menus, autocomplete, or other states that need a new observation. Secret placeholders work and live screenshots remain available afterward.".into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "frame_id": {"type": "string", "description": "ID of the latest full screenshot used to plan the sequence"},
+                "actions": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"oneOf": variants}},
+            },
+            "required": ["frame_id", "actions"],
+        }),
+    });
+    defs
 }
 
 #[cfg(test)]
@@ -884,6 +910,21 @@ mod tests {
                 "tool '{}' schema must be type:object",
                 def.name,
             );
+        }
+    }
+
+    #[test]
+    fn schemas_match_integer_pixels_and_fractional_computer_duration() {
+        let defs = all_tool_defs();
+        let schema = |name: &str| &defs.iter().find(|d| d.name == name).unwrap().input_schema;
+        assert_eq!(schema("click")["properties"]["x"]["type"], "integer");
+        assert_eq!(schema("wait")["properties"]["ms"]["type"], "integer");
+        assert_eq!(schema("computer")["properties"]["duration"]["type"], "number");
+        assert!(defs.iter().find(|d| d.name == "screenshot").unwrap().description.contains("remain available"));
+        for name in ["zoom", "find_text", "read_text", "wait", "type"] {
+            let description = defs.iter().find(|d| d.name == name).unwrap().description.to_lowercase();
+            assert!(description.contains("remain"), "{name} must describe continued live perception");
+            assert!(!description.contains("disabled after vault secret"));
         }
     }
 

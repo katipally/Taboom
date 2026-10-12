@@ -74,9 +74,9 @@ is without taking a screenshot.
 
 ## Visual capture after secrets
 
-After typing any `<secret>name</secret>` value, screenshots, zoom, read_text, find_text,
-and video recording are permanently disabled for the rest of the data volume. Plan your
-visual verification steps before typing secrets.
+After typing a `<secret>name</secret>` value, screenshots, zoom, read_text, find_text and visual
+waits remain available. Their live responses may expose visible credentials, so use masked fields
+and do not reveal secrets. Saved recording frames and video resume afterward and can expose visible credentials.
 
 ## Efficient visual workflows
 

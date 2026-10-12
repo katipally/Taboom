@@ -8,6 +8,18 @@ How to fill out web forms with Taboom.
 2. Use `zoom` on small or dense areas to read field labels clearly.
 3. Work top-to-bottom, left-to-right, following the visual order.
 
+## Plan and execute a continuous fill
+
+Use the latest full screenshot's `frame_id` to plan all predictable visible fields. Call
+`batch_actions` once with ordered `click`, `type`, and `key` steps, each including its `tool` name.
+Use `ctrl+a` to replace existing values and Tab only when the field order is known. Secret
+placeholders work in `type` steps. Do not pause for model reasoning between every known field.
+The batch returns a fresh screenshot: verify values there, then submit with a separate call.
+
+End a batch before unknown dropdown options, autocomplete suggestions, a page transition, or
+validation that changes the layout. If a step fails, use the reported completed steps to resume
+from the current state; never replay the whole fill automatically.
+
 ## Text inputs
 
 1. Click the field to focus it.
@@ -56,7 +68,7 @@ How to fill out web forms with Taboom.
 
 ## Tips
 
-- Do not rush through fields. Add brief waits between actions.
+- Let the humanizer pace keystrokes and pointer motion. Add explicit waits only when the UI needs time.
 - If a field has auto-complete suggestions, take a screenshot to check before continuing.
 - Required fields are often marked with * or colored borders. Check for these.
 - If a form has a CAPTCHA, handle it with the `challenge_flow` prompt before submitting.

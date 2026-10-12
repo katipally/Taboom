@@ -103,6 +103,17 @@ pub struct Humanizer {
     /// Stable motor habits. Unset: derived from the name, so they never change between boots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
+    /// Human-derived mouse shapes by default; heuristic provides an experimental baseline.
+    #[serde(default)]
+    pub mouse_model: MouseModel,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MouseModel {
+    #[default]
+    Empirical,
+    Heuristic,
 }
 
 /// Shared humanizer speed class for runtime configuration and the motion model.
@@ -380,7 +391,7 @@ pub fn derive_persona(name: &str, country: &str, seed: u64) -> Result<Persona> {
         screen: ScreenSpec { width: hw.screen_width, height: hw.screen_height, scale: hw.dpr },
         browser: Browser::default(),
         route: Route::Direct,
-        humanizer: Humanizer { seed: Some(seed) },
+        humanizer: Humanizer { seed: Some(seed), ..Default::default() },
     })
 }
 

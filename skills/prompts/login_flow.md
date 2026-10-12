@@ -39,7 +39,9 @@ How to log into a website using Taboom.
 
 - Never type a password or secret directly. Always use `<secret>name</secret>`.
 - The vault must have the secret pre-loaded by the operator via `taboom vault add`.
-- After the first secret is typed, screenshots and video recording are disabled for the
-  rest of the data volume. Plan your visual verification before typing secrets.
+- Screenshots, zoom, OCR and visual waits remain available after secret typing. Take a fresh
+  screenshot to verify the transition and locate a 2FA field. Visible secrets can appear in live
+  responses, so use masked fields and do not reveal their contents. Saved frames and video pause
+  during secret entry and resume afterward; review them before sharing.
 - Close other tabs and windows before typing secrets (the omnibox host check requires
   all visible tabs to be on the same domain).

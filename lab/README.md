@@ -5,22 +5,23 @@ The results describe these specific protocols; they do not prove general human e
 
 ## Install
 
+Run these commands from the repository root:
+
 ```bash
-cd lab
-pip install -e ".[dev]"
+python3 -m pip install -e "./lab[dev]"
 ```
 
 For the evdev recorder (Linux only):
 
 ```bash
-pip install -e ".[dev,recorder]"
+python3 -m pip install -e "./lab[dev,recorder]"
 ```
 
 ## Run tests
 
 ```bash
 cargo run -p taboom-humanizer --example trace_export -- lab/traces.jsonl
-pytest
+python3 -m pytest lab
 ```
 
 The regression and detector suites consume these seeded Rust traces. The generated
@@ -60,20 +61,20 @@ Regenerate the seeded Rust traces, download the pinned A11y-CUA snapshot, and de
 ```bash
 cargo run -p taboom-humanizer --example trace_export -- lab/traces.jsonl
 hf download berkeley-hci/Reduced-A11y-CUA --repo-type dataset \
+  --include README.md 'SU/**/*.exe.json' \
   --revision 26ee1103f74436cb7051543ba65d0c57902c0eb6 --local-dir /tmp/reduced-a11y-cua
-cd lab
 python -m taboom_lab.shape_eval \
   --human-root /tmp/reduced-a11y-cua/SU \
-  --rust-traces traces.jsonl \
-  --write-fixture data/a11y_cua_su_shape_features.json
+  --rust-traces lab/traces.jsonl \
+  --write-fixture lab/data/a11y_cua_su_shape_features.json
 ```
 
 To reproduce the CI diagnostic from the committed feature fixture:
 
 ```bash
 python -m taboom_lab.shape_eval \
-  --human-fixture data/a11y_cua_su_shape_features.json \
-  --rust-traces traces.jsonl
+  --human-fixture lab/data/a11y_cua_su_shape_features.json \
+  --rust-traces lab/traces.jsonl --human-groups p07 p08 --max-mean-auc 0.97
 ```
 
 Rust paths are thinned using only their own timestamps at 200, 250, and 330 ms intervals before
@@ -82,3 +83,46 @@ each cadence. CI fails when any cadence's mean AUC exceeds `--max-mean-auc 0.97`
 ratchet, not a pass mark: today's humanizer sits near 0.95 (0.5 would mean indistinguishable), so
 the ceiling only catches regressions. Lower it whenever the humanizer improves. These task-wide
 mouse-move runs do not establish click-to-target equivalence.
+
+## Runtime human-data connection
+
+The default `empirical` mouse model loads a bundled, versioned path library compiled into the Rust
+humanizer. It draws normalized human shapes of comparable distance, rotates/scales them to the
+requested target, optionally mirrors them, and applies heuristic velocity and tremor. The dataset
+provides geometry; it does not supply fine-grained motor timing. Keyboard, scroll, idle and
+click-hold models remain heuristic. Offline typing fits are analysis outputs, not runtime models.
+
+The library is derived from the pinned SU snapshot credited in [data/README.md](data/README.md).
+Only groups p01–p06 contribute paths; p07–p08 are reserved. We retain 16 normalized points per
+bounded movement of 50–800 px, exclude task detours with path/chord length over 1.2, and select up
+to 64 runs per training participant by a deterministic hash order. Short runtime moves prefer
+paths with path/chord length at most 1.08 to limit integer-pixel rounding detours. Absolute source
+positions, timestamps, screen contents and original participant identifiers are not bundled.
+
+Regenerate the library after downloading the pinned event logs:
+
+```bash
+PYTHONPATH=lab python -m taboom_lab.calibration \
+  --human-root /tmp/reduced-a11y-cua/SU \
+  --output crates/taboom-humanizer/data/human_mouse.json
+```
+
+The exporter checks the complete source digest before extraction. Rust validates the artifact's
+schema, endpoints, finite coordinates and geometry bounds. `persona_status` exposes model and
+provenance. Select `mouse_model = "heuristic"` under `[humanizer]` for the previous baseline.
+
+CI exports the default runtime model and evaluates only reserved groups:
+
+```bash
+python -m taboom_lab.shape_eval \
+  --human-fixture lab/data/a11y_cua_su_shape_features.json \
+  --rust-traces lab/traces.jsonl --human-groups p07 p08 --max-mean-auc 0.97
+```
+
+This requires all 10 reserved-participant/seed folds at each cadence. Scores on p01–p06 are not
+independent evidence for the empirical model. Export the baseline for the same comparison with
+`cargo run -p taboom-humanizer --example trace_export -- /tmp/heuristic.jsonl heuristic`.
+
+These reserved-group scores are reused during development as a regression diagnostic. They are
+not an untouched final benchmark; claims about general human-like behavior require a new corpus
+and a preregistered evaluation protocol.

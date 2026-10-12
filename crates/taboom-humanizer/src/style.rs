@@ -2,10 +2,12 @@ use rand::distributions::{Distribution, Uniform};
 use rand::rngs::StdRng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-pub use taboom_core::persona::SpeedClass;
+pub use taboom_core::persona::{MouseModel, SpeedClass};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HumanizerStyle {
+    #[serde(default)]
+    pub mouse_model: MouseModel,
     pub fitts_a_ms: f64,
     pub fitts_b_ms: f64,
     pub tremor_freq_hz: f64,
@@ -43,6 +45,7 @@ impl HumanizerStyle {
             SpeedClass::Fast => (120.0, 100.0),
         };
         Self {
+            mouse_model: MouseModel::Empirical,
             fitts_a_ms: a,
             fitts_b_ms: b,
             tremor_freq_hz: 10.0,

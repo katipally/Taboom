@@ -59,7 +59,7 @@ Get the live desktop view URL. Two URLs are returned:
 
 ## Recordings
 
-Every session records each tool call and a screen frame after each action.
+Every session records tool calls. Saved frames and video pause during vault secret entry and resume afterward; live perception remains available.
 
 ### recording_list
 Lists recorded sessions, newest first.
@@ -81,14 +81,14 @@ Read the steps and frames of a recording.
 **Tips:**
 - Use without `frames` first to see the step log.
 - Then use `step` to inspect specific frames you care about.
-- After secret typing, frames are unavailable for the rest of the data volume.
+- Frames resume after secret typing and can include visible credentials; review before sharing.
 
 ### recording_share
 Generate a signed URL for a web replay page that a human can open in their browser.
 
 **Parameters:**
 - `id`: Recording ID. Default: current session.
-- `expires_in_s`: Link lifetime in seconds. Default 604800 (7 days).
+- `expires_in_s`: Link lifetime in seconds. Default 86400 (24 hours).
 
 **When to use:**
 - Sharing results with the user or team.
@@ -107,7 +107,7 @@ Upload a file into the container for use in browser file dialogs.
 **When to use:** The browser shows a file upload dialog and you need to provide a file.
 
 ### files_get
-Download a file from the container by its path.
+Download a file from the downloads directory by its relative name or a path within that directory.
 
 **When to use:** Retrieving a file the browser downloaded, or getting a screenshot/export.
 
@@ -135,7 +135,7 @@ Only one agent can hold the desktop at a time. If you get a session_start failur
 The container's data volume persists across restarts:
 - Chrome profile (cookies, logins, history, tabs).
 - Vault secrets.
-- Visual suppression state (after secret typing).
+- Capture resumes after secret typing; legacy persistent capture restrictions are removed on upgrade.
 
 Resetting the data volume (e.g., `docker compose down -v`) clears everything,
 including the vault and Chrome profile.

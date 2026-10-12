@@ -34,4 +34,17 @@ For each cadence, pair human and Rust examples one-to-one by minimum absolute en
 
 ## CI and acceptance status
 
-CI runs this pipeline against the derived fixture and requires all 40 participant/seed folds to meet the documented minimum pair counts. It also sets `--max-mean-auc 0.97`, failing when any evaluated cadence exceeds that mean AUC. This ceiling guards against regression; it is not an acceptance threshold for human equivalence. Running without the option reports diagnostic scores without an AUC gate. The corpus combines task-wide movement runs with the humanizer's simple seeded move plans; the AUC can still reflect unmodeled task, device, capture, or path-shape differences.
+CI runs this pipeline against the derived fixture and uses the reserved p07–p08 groups and requires all 10 participant/seed folds to meet the documented minimum pair counts. It also sets `--max-mean-auc 0.97`, failing when any evaluated cadence exceeds that mean AUC. This ceiling guards against regression; it is not an acceptance threshold for human equivalence. Running without the option reports diagnostic scores without an AUC gate. The corpus combines task-wide movement runs with the humanizer's simple seeded move plans; the AUC can still reflect unmodeled task, device, capture, or path-shape differences.
+
+## Runtime path-library attribution
+
+`crates/taboom-humanizer/data/human_mouse.json` is a separate adaptation of the same source by
+Taboom, under the source's [CC BY 4.0 license](https://creativecommons.org/licenses/by/4.0/).
+Credit: Ananya Gubbi Mohanbabu, Rosiana Natalie, Brandon Kim, Anhong Guo, and Amy Pavel,
+UC Berkeley HCI, [A11y-CUA Dataset](https://arxiv.org/abs/2602.09310).
+
+The runtime adaptation retains normalized 16-point mouse shapes and rounded endpoint distances,
+with bounded aimed-movement selection, pseudonymous training groups p01–p06, and deterministic
+sampling. It excludes p07–p08 from calibration for the regression evaluation. It removes raw positions and timing and
+applies heuristic timing when used as input. The extraction command and restrictions are documented
+in [the lab README](../README.md). Both artifacts pin the same revision and event-log digest.

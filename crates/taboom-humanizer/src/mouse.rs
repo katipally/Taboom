@@ -31,7 +31,7 @@ fn erf(x: f64) -> f64 {
 
 /// Progress 0..1 of one submovement at normalized time `u` in 0..1: the lognormal CDF, so
 /// speed is an asymmetric bell (fast rise, long tail), scaled to reach exactly 1 at u = 1.
-fn lognormal_progress(u: f64, mu: f64, sigma: f64) -> f64 {
+pub(crate) fn lognormal_progress(u: f64, mu: f64, sigma: f64) -> f64 {
     if u <= 0.0 {
         return 0.0;
     }
@@ -74,6 +74,10 @@ pub fn plan_move(
 
     if distance < 0.5 {
         return ActionPlan::new();
+    }
+
+    if style.mouse_model == crate::style::MouseModel::Empirical && (50.0..=800.0).contains(&distance) {
+        return crate::calibration::plan_move(from, to, target_size, style, rng);
     }
 
     let (ux, uy) = (dx / distance, dy / distance);

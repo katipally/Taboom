@@ -23,12 +23,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(path) => Box::new(BufWriter::new(File::create(path)?)),
         None => Box::new(BufWriter::new(io::stdout().lock())),
     };
-    if args.next().is_some() {
-        return Err("usage: trace_export [OUTPUT.jsonl]".into());
-    }
+    let model = match args.next().as_deref().and_then(|v| v.to_str()) {
+        None | Some("empirical") => taboom_humanizer::style::MouseModel::Empirical,
+        Some("heuristic") => taboom_humanizer::style::MouseModel::Heuristic,
+        _ => return Err("usage: trace_export [OUTPUT.jsonl] [empirical|heuristic]".into()),
+    };
+    if args.next().is_some() { return Err("too many trace_export arguments".into()); }
 
     for seed in 0..SEEDS {
-        let style = HumanizerConfig::from_seed(seed).style;
+        let mut style = HumanizerConfig::from_seed(seed).style;
+        style.mouse_model = model;
         let distances = [50.0, 100.0, 200.0, 400.0, 800.0];
         let from = (80.0 + (seed % 13) as f64, 90.0 + (seed % 17) as f64);
         for (variant, distance) in distances.into_iter().enumerate() {

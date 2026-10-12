@@ -309,7 +309,9 @@ impl Recorder {
         let dir = self.session_dir(id).ok()?;
         ["video.mp4", "video.mkv"].into_iter().find_map(|file| {
             let bytes = std::fs::metadata(dir.join(file)).ok()?.len();
-            Some(Video { file, bytes, finished: file.ends_with(".mp4") })
+            let pending = dir.join("video.mkv").exists() || std::fs::read_dir(&dir).ok()
+                .is_some_and(|entries| entries.flatten().any(|entry| entry.file_name().to_string_lossy().starts_with("video-part-")));
+            Some(Video { file, bytes, finished: file.ends_with(".mp4") && !pending })
         })
     }
 
@@ -809,6 +811,15 @@ mod tests {
         assert!(rec.verify(&id, q["exp"].parse().unwrap(), q["sig"]));
         assert!(!rec.verify(&id, q["exp"].parse::<u64>().unwrap() + 1, q["sig"]));
         assert!(!rec.verify(&id, 1, q["sig"]), "expired links fail");
+
+        let dir = rec.session_path(&id).unwrap();
+        std::fs::remove_file(dir.join("video.mkv")).unwrap();
+        std::fs::write(dir.join("video.mp4"), b"finalized").unwrap();
+        assert!(rec.video(&id).unwrap().finished);
+        std::fs::write(dir.join("video-part-test.mkv"), b"resumed").unwrap();
+        assert!(!rec.video(&id).unwrap().finished, "a resumed clip is still recording");
+        std::fs::remove_file(dir.join("video-part-test.mkv")).unwrap();
+        assert!(rec.video(&id).unwrap().finished);
     }
 
     #[test]

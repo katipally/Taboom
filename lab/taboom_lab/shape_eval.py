@@ -669,6 +669,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rust-traces", required=True, help="Rust exporter JSONL from trace_export")
     parser.add_argument("--write-fixture", help="write a sanitized, deterministic feature fixture from --human-root")
     parser.add_argument("--max-mean-auc", type=float, default=None, help="fail when any cadence's mean AUC exceeds this; CI ratchets it down over time")
+    parser.add_argument("--human-groups", nargs="+", help="evaluate only these participant groups; empirical runtime evaluation uses reserved p07 p08")
     args = parser.parse_args(argv)
 
     if args.write_fixture and not args.human_root:
@@ -692,6 +693,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         humans, metadata = load_human_fixture(args.human_fixture)
 
+    if args.human_groups:
+        known = {sample.participant for sample in humans}
+        if set(args.human_groups) - known:
+            parser.error("human-groups contains an unknown participant")
+        humans = [sample for sample in humans if sample.participant in args.human_groups]
     rust_traces = load_rust_traces(args.rust_traces)
     report = evaluate_shapes(humans, rust_traces)
     if args.max_mean_auc is not None:

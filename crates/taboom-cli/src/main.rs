@@ -165,8 +165,8 @@ fn gauntlet_command() -> Result<()> {
     }
 
     // Always release the desktop lease, including when capture/OCR fails. The first screenshot
-    // is a capability check: after secret typing the normal MCP path refuses visual output, so
-    // this command stops before navigating to any detector site.
+    // is a capability check: stop before navigating if live screenshots are unavailable.
+    // Vault recording protection does not disable explicit live perception.
     let pages_result = capture_gauntlet_pages(&client, &run_dir);
     let end_result = call_tool_json(&client, "session_end", &json!({}));
     let pages = match (pages_result, end_result) {

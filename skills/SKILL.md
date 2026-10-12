@@ -7,7 +7,7 @@ available as `taboom://skills/sites/<filename>`.
 
 ## Ground Truth
 
-The screenshot is your ground truth. Always take a fresh screenshot to verify the result of any action before declaring it done.
+The screenshot is your ground truth. Use a fresh screenshot to plan a meaningful sequence and verify its result before declaring it done.
 
 ## Popups and Dialogs
 
@@ -61,11 +61,12 @@ Secret calls use exact keymap strokes, skip the typo planner, and never paste or
 The recorder keeps only the original placeholder, and the audit log stores the secret name and
 hostname, never the value.
 
-Before typing, Taboom finalizes the active screen video and waits for pending frame captures. After
-the first secret, screenshots, zoom images, recording frames, and further video are disabled for
-the rest of the persistent data volume. This survives container restarts; resetting the data volume
-(for example `docker compose down -v`, which also deletes the vault and browser profile) clears it.
-The live view remains visible to a person who opens it.
+Before typing, Taboom finalizes the active video clip and invalidates pending frame captures.
+Capture and input tracing pause during secret keystrokes, then screenshots, zoom, OCR, saved
+frames and video resume. Visible credentials can appear in live responses and shared recordings.
+Use masked password fields, do not reveal their contents, and review artifacts before sharing.
+Continue with a fresh screenshot to verify login or locate the next field. The human live view
+remains available throughout.
 
 ## Actions
 
@@ -73,6 +74,17 @@ The live view remains visible to a person who opens it.
 
 Use the native Taboom tools shown by `tools/list`. For credentials, use the `type` tool with the
 `<secret>name</secret>` placeholder. Do not rely on tool names from other browser-control APIs.
+
+## Continuous flow
+
+For predictable visible forms, plan the fields from one full screenshot and use `batch_actions`
+with that `frame_id`. Each step has a `tool` field and the normal native arguments. Fill fields in
+visual or known Tab order without a model round trip between every click and keystroke. The server
+keeps natural input timing, returns step outcomes, and captures a fresh screenshot at the end.
+Verify the completed form before submitting in a separate call. Do not put submission clicks or
+Enter-to-submit into the fill batch. Stop the sequence before an unknown dropdown, autocomplete
+choice, navigation, dialog, or other state that needs a new observation. On failure, inspect the
+returned screenshot and `completed_actions`; never repeat steps already performed.
 
 ## Settling
 
@@ -101,7 +113,8 @@ This Taboom container is exactly one persona, with its own Chrome profile (cooki
 
 ## Recordings
 
-Sessions have a step log. Before secret typing, screen video and frames are recorded. Secret typing stops the video before the keys are pressed and disables all later visual capture for the rest of the persistent data volume; `recording_get` will not return images after this state begins. Share only existing video that ends before the secret action.
+Sessions record a step log, saved frames and video. Secret keystrokes pause capture; it resumes
+afterward and can include visible credentials. Review screenshots and video before sharing.
 
 ## Challenge / CAPTCHA Handling
 

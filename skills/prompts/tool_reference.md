@@ -85,8 +85,15 @@ Complete guide to all 36 Taboom tools, grouped by function. Every tool uses the 
 
 1. **Always screenshot first.** Every action needs coordinates from a fresh screenshot.
 2. **Describe your intent.** `click` and `drag` require `describe` -- say what you are doing, not what you are clicking.
-3. **Verify after acting.** Screenshot after every action to confirm the result.
+3. **Verify after acting.** Verify a meaningful sequence with its final screenshot; use batch_actions for predictable visible form fields.
 4. **Secrets use placeholders.** Never type passwords directly. Use `<secret>name</secret>`.
-5. **Visual capture stops after secrets.** After typing a secret, screenshots, zoom, OCR, and video are disabled for the data volume.
+5. **Live perception continues after secrets.** Screenshots, zoom and OCR remain available and may show visible credentials. Saved frames and video resume afterward and may contain visible credentials.
 6. **Coordinates are scaled.** Screenshots scale to max_edge 1280 by default. Click in that space; Taboom maps to native resolution.
 7. **One session at a time.** Only one agent can hold the desktop. `session_start` fails if another agent has it.
+
+## Continuous flow
+
+`batch_actions { frame_id, actions }` executes 1–64 ordered native actions and returns a final
+screenshot. Steps include their `tool` name and normal arguments. Supports click, move, type, key,
+scroll and wait. Plan from a fresh full screenshot, batch known visible fields, verify, then submit
+separately. Stop before unknown states. On error, resume after completed actions instead of replaying.

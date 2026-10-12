@@ -17,8 +17,9 @@
 
 1. Confirm the visible hostname before entering credentials.
 2. Use the Taboom `type` tool with `<secret>name</secret>` for passwords and TOTP codes.
-3. Take a fresh screenshot after typing to verify the visible result. Taboom disables later visual
-   capture after the first secret is typed.
+3. Take a fresh screenshot after typing to verify the visible result. Capture resumes afterward,
+   including saved frames and video; visible credentials may appear, so use masked fields and
+   review recordings before sharing.
 4. Type a TOTP code immediately after resolving it because the code expires.
 
 ## Search

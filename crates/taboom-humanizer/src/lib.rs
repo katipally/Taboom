@@ -1,4 +1,5 @@
 pub mod click;
+pub mod calibration;
 pub mod drag;
 pub mod idle;
 pub mod mouse;

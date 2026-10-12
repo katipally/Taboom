@@ -13,12 +13,12 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs::OpenOptions;
 use std::io::{Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::process::{Child, ChildStdout, ExitStatus, Stdio};
+#[cfg(test)]
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -189,8 +189,20 @@ pub struct ToolHandler {
     max_edge: u32,
     secret_context: Option<SecretContext>,
     visual_capture: Arc<Mutex<()>>,
-    visual_sensitive: Arc<AtomicBool>,
-    sensitive_marker: Option<PathBuf>,
+    recording_sensitive: Arc<AtomicBool>,
+    capture_epoch: Arc<AtomicU64>,
+}
+
+struct RecordingResume {
+    paused: Arc<AtomicBool>,
+    epoch: Arc<AtomicU64>,
+}
+
+impl Drop for RecordingResume {
+    fn drop(&mut self) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        self.paused.store(false, Ordering::SeqCst);
+    }
 }
 
 struct SecretContext {
@@ -225,8 +237,8 @@ impl ToolHandler {
             max_edge,
             secret_context: None,
             visual_capture: Arc::new(Mutex::new(())),
-            visual_sensitive: Arc::new(AtomicBool::new(false)),
-            sensitive_marker: None,
+            recording_sensitive: Arc::new(AtomicBool::new(false)),
+            capture_epoch: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -238,9 +250,13 @@ impl ToolHandler {
         home: &Path,
     ) -> Result<Self> {
         let marker = home.join("run").join("secret-visuals-disabled");
-        self.visual_sensitive.store(marker.exists(), Ordering::SeqCst);
+        match std::fs::remove_file(&marker) {
+            Ok(()) => {},
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) => return Err(error).context("could not remove the legacy capture restriction"),
+        }
+        self.recording_sensitive.store(false, Ordering::SeqCst);
         self.secret_context = Some(SecretContext { vault, audit, page_targets });
-        self.sensitive_marker = Some(marker);
         Ok(self)
     }
 
@@ -276,6 +292,15 @@ impl ToolHandler {
         // This prevents another MCP call from taking a screenshot or interleaving a key press
         // while sensitive text is in flight.
         let _tool = self.tool_lock.lock().unwrap();
+        if let ToolCall::BatchActions { actions, frame_id } = &call {
+            return settle(self.batch_actions(actions, frame_id, client_id));
+        }
+        self.handle_locked(call, client_id)
+    }
+
+    /// The caller owns tool_lock, including throughout a batch. Each step keeps normal
+    /// lease checks, input timing, secret handling and recording behavior.
+    fn handle_locked(&self, call: ToolCall, client_id: &str) -> ToolResult {
         let call = match &call {
             ToolCall::Computer { .. } => match translate_computer_tool(&call) {
                 Some(native) => native,
@@ -295,7 +320,7 @@ impl ToolHandler {
             self.local.set_idle(true);
         }
 
-        let frame = if self.visual_sensitive.load(Ordering::SeqCst) {
+        let frame = if self.recording_sensitive.load(Ordering::SeqCst) {
             recording::Frame::None
         } else { match (&call, result.is_error) {
             (ToolCall::Screenshot { .. } | ToolCall::Zoom { .. }, false) => result
@@ -326,11 +351,13 @@ impl ToolHandler {
         if let Some(path) = pending {
             let local = self.local.clone();
             let visual_capture = Arc::clone(&self.visual_capture);
-            let visual_sensitive = Arc::clone(&self.visual_sensitive);
+            let recording_sensitive = Arc::clone(&self.recording_sensitive);
+            let capture_epoch = Arc::clone(&self.capture_epoch);
+            let epoch = capture_epoch.load(Ordering::SeqCst);
             std::thread::spawn(move || {
                 std::thread::sleep(RECORD_FRAME_DELAY);
                 let _visual = visual_capture.lock().unwrap();
-                if visual_sensitive.load(Ordering::SeqCst) {
+                if recording_sensitive.load(Ordering::SeqCst) || capture_epoch.load(Ordering::SeqCst) != epoch {
                     return;
                 }
                 let capture = local.screen().and_then(|screen| local.capture(None, screen.scale * 0.5, "png"));
@@ -353,9 +380,73 @@ impl ToolHandler {
         result
     }
 
+    fn batch_actions(&self, actions: &[ToolCall], frame_id: &str, client_id: &str) -> Res {
+        if actions.is_empty() || actions.len() > 64 {
+            bail!("batch_actions requires 1-64 actions");
+        }
+        if self.lease_mgr.lock().unwrap().lease_for(client_id).is_none() {
+            bail!("batch requires your active session; call session_start first");
+        }
+        if let Some(refusal) = self.route_refusal() { return Ok(refusal); }
+        let view = self.views.lock().unwrap().get(client_id).copied()
+            .context("take a full screenshot before planning a batch")?;
+        if view.id.to_string() != frame_id {
+            bail!("batch frame is stale; take a fresh screenshot and replan");
+        }
+        if self.local.screen()? != view.screen {
+            bail!("screen geometry changed; take a fresh screenshot and replan the batch");
+        }
+        // Reject unsupported steps before performing any input. Batches never recurse or
+        // change leases; the agent must observe new page states in a separate round trip.
+        for action in actions {
+            match action {
+                ToolCall::Type { submit: true, .. } => bail!("fill and verify the batch before submitting in a separate call"),
+                ToolCall::Click { frame_id: Some(id), .. } if id != frame_id => bail!("batch click references a different frame"),
+                ToolCall::Click { .. } | ToolCall::Move { .. } | ToolCall::Type { .. }
+                    | ToolCall::Key { .. } | ToolCall::Scroll { .. } | ToolCall::Wait { .. } => {},
+                _ => bail!("batch supports only click, move, type, key, scroll and wait"),
+            }
+            if let ToolCall::Type { text, .. } = action { parse_secret_text(text)?; }
+        }
+        let mut steps = Vec::new();
+        let mut failure = None;
+        for (index, action) in actions.iter().enumerate() {
+            let result = self.handle_locked(action.clone(), client_id);
+            steps.push(json!({"index": index, "tool": tool_name(action), "ok": !result.is_error, "result": result.content}));
+            if result.is_error {
+                failure = Some((index, result.error.unwrap_or_else(|| "action failed".into())));
+                let _ = self.local.release_all();
+                break;
+            }
+        }
+        if failure.is_none() {
+            let settled = self.handle_locked(ToolCall::Wait { ms: Some(3000), until_settled: Some(true), until_text: None }, client_id);
+            if settled.is_error { failure = Some((actions.len(), settled.error.unwrap_or_else(|| "settling failed".into()))); }
+        }
+        let screenshot = self.handle_locked(ToolCall::Screenshot { frame_id: None, max_edge: None, region: None }, client_id);
+        let completed_actions = steps.iter().filter(|s| s["ok"] == true).count();
+        let mut result = ToolResult::ok(json!({
+            "completed": failure.is_none(),
+            "completed_actions": completed_actions,
+            "steps": steps,
+            "failed_step": failure.as_ref().map(|(i, _)| *i),
+            "screenshot": screenshot.content,
+            "note": "Do not replay completed actions. Observe the returned frame before continuing.",
+        }));
+        result.images = screenshot.images;
+        if let Some((_, error)) = failure {
+            result.error = Some(error);
+            result.is_error = true;
+        } else if screenshot.is_error {
+            result.error = Some("actions completed but final screenshot failed; take a screenshot without replaying the batch".into());
+            result.is_error = true;
+        }
+        Ok(result)
+    }
+
     /// Screen video for the session, next to its events.
     fn start_video(&self, client_id: &str, rec: &str) {
-        if self.visual_sensitive.load(Ordering::SeqCst) {
+        if self.recording_sensitive.load(Ordering::SeqCst) {
             return;
         }
         let Ok(dir) = self.recorder.session_path(rec) else {
@@ -365,7 +456,11 @@ impl ToolHandler {
         if videos.contains_key(client_id) {
             return;
         }
-        let mkv = dir.join("video.mkv");
+        let mkv = if dir.join("video.mp4").exists() {
+            dir.join(format!("video-part-{}.mkv", Uuid::new_v4().simple()))
+        } else {
+            dir.join("video.mkv")
+        };
         match self.local.start_video(&mkv) {
             Ok(child) => {
                 videos.insert(client_id.to_string(), (child, mkv));
@@ -395,18 +490,25 @@ impl ToolHandler {
     /// OCRs only the geometry-derived Chrome omnibox crop. The bytes and recognized text stay in
     /// this stack frame; unlike ordinary OCR, this result is never cached, returned, or logged.
     fn cross_check_visible_omnibox(&self, page_hosts: &[PageHost]) -> std::result::Result<String, AddressBarRefusal> {
-        let crop: ScaledCrop = self.local.focused_chrome_omnibox_crop()
+        let mut crop: ScaledCrop = self.local.focused_chrome_omnibox_crop()
             .map_err(|_| AddressBarRefusal::Unavailable)?;
+        // A wide toolbar crop mixes tiny URL glyphs with icons. Prefer the URL text band,
+        // leaving enough space for the longest host candidate, and render it at 2x for OCR.
+        // A truncated/misread host still fails the exact host and confidence checks below.
+        let host_width = page_hosts.iter().map(|p| p.host.len()).max().unwrap_or(0)
+            .saturating_mul(12).saturating_add(120).max(600);
+        crop.rect.w = crop.rect.w.min(u32::try_from(host_width).unwrap_or(u32::MAX));
+        crop.scale *= 2.0;
         let png = self.local.capture_cursor_free(Some(crop.rect), crop.scale, "png")
             .map_err(|_| AddressBarRefusal::Unavailable)?;
         if !scaled_crop_png_size_matches(&png, crop) {
             return Err(AddressBarRefusal::Unavailable);
         }
-        let installed = installed_tesseract_languages(None)
+        let installed = installed_tesseract_languages(&self.local, None)
             .map_err(|_| AddressBarRefusal::Unavailable)?;
         let language = select_tesseract_languages(&self.persona.identity.languages, &installed)
             .map_err(|_| AddressBarRefusal::Unavailable)?;
-        let tsv = run_tesseract(png, &language, None)
+        let tsv = run_tesseract(&self.local, png, &language, None)
             .map_err(|_| AddressBarRefusal::Unavailable)?;
         let origin = (
             (crop.rect.x as f64 * crop.scale).round() as u32,
@@ -495,6 +597,10 @@ impl ToolHandler {
         // focus/domain/route check passes, then close it just before redaction and key input.
         let _visual = self.visual_capture.lock().unwrap();
         let trace = self.local.pause_trace()?;
+        let recording_resume = RecordingResume {
+            paused: Arc::clone(&self.recording_sensitive),
+            epoch: Arc::clone(&self.capture_epoch),
+        };
         let check_focus_route_and_domain = || -> Result<String> {
             match self.local.focused_chrome_is_fullscreen() {
                 Ok(false) => {}
@@ -527,10 +633,14 @@ impl ToolHandler {
                 ctx.audit.log_secret_used(name, &current_domain)
                     .context("could not audit secret use; secret typing was refused")?;
             }
-            self.mark_visual_sensitive()?;
+            self.mark_recording_sensitive()?;
             Ok(())
         });
         let trace_restored = trace.resume();
+        drop(recording_resume);
+        if let Some(recording) = self.recorder.current(client_id) {
+            self.start_video(client_id, &recording);
+        }
         typed.context("exact secret typing failed")?;
         trace_restored.context("secret was typed, but VINPUT_TRACE could not be restored")?;
         if submit {
@@ -541,16 +651,14 @@ impl ToolHandler {
             "mode": "keys",
             "submitted": submit,
             "secrets_used": resolved_names.len(),
+            "visual_perception": "available; visible credentials may appear in screenshots or OCR",
+            "recording_visuals": "resumed; visible credentials can be saved and shared",
         })))
     }
 
-    fn mark_visual_sensitive(&self) -> Result<()> {
-        let marker = self.sensitive_marker.as_ref().context("persistent secret redaction marker is not configured")?;
-        let mut file = OpenOptions::new().create(true).append(true).mode(0o600).open(marker)
-            .context("could not persist secret redaction state")?;
-        file.write_all(b"secret typing used; screen output disabled\n")?;
-        file.sync_all()?;
-        self.visual_sensitive.store(true, Ordering::SeqCst);
+    fn mark_recording_sensitive(&self) -> Result<()> {
+        self.capture_epoch.fetch_add(1, Ordering::SeqCst);
+        self.recording_sensitive.store(true, Ordering::SeqCst);
         self.ocr_cache.lock().unwrap().clear();
         Ok(())
     }
@@ -608,9 +716,6 @@ impl ToolHandler {
     fn local_call(&self, local: &LocalExecutor, call: &ToolCall, client_id: &str) -> Res {
         match call {
             ToolCall::Screenshot { max_edge, region, .. } => {
-                if self.visual_sensitive.load(Ordering::SeqCst) {
-                    bail!("screen images and video are disabled for this data volume after vault secret typing; clear the persistent data volume to reset this state");
-                }
                 let screen = local.screen()?;
                 let max_edge = max_edge.unwrap_or(self.max_edge).clamp(200, 4096);
                 if let Some(region) = region {
@@ -636,9 +741,6 @@ impl ToolHandler {
                 .with_image(&png, "image/png"))
             }
             ToolCall::Zoom { region } => {
-                if self.visual_sensitive.load(Ordering::SeqCst) {
-                    bail!("screen images and video are disabled for this data volume after vault secret typing; clear the persistent data volume to reset this state");
-                }
                 self.zoom(local, client_id, region, 4096)
             }
             ToolCall::CursorPosition => {
@@ -707,7 +809,8 @@ impl ToolHandler {
                     "paste" => true,
                     "keys" if !typeable => bail!("text has characters with no key on this layout; use mode paste or auto"),
                     "keys" => false,
-                    _ => !typeable || text.chars().count() > PASTE_THRESHOLD_CHARS,
+                    "auto" => !typeable || text.chars().count() > PASTE_THRESHOLD_CHARS,
+                    _ => bail!("typing mode must be keys, paste or auto"),
                 };
                 if paste {
                     local.clipboard_set(text)?;
@@ -780,9 +883,6 @@ impl ToolHandler {
                 let started = Instant::now();
                 if until_settled.unwrap_or(false) && until_text.is_some() {
                     bail!("choose either until_settled or until_text");
-                }
-                if until_settled.unwrap_or(false) && self.visual_sensitive.load(Ordering::SeqCst) {
-                    bail!("screen images, OCR and video are disabled for this data volume after vault secret typing; clear the persistent data volume to reset this state");
                 }
                 if let Some(text) = until_text {
                     let needle = normalize_ocr_text(text);
@@ -1018,12 +1118,8 @@ impl ToolHandler {
         region: Option<&ToolRegion>,
         deadline: Option<Instant>,
     ) -> Result<(View, Vec<OcrLine>)> {
-        if self.visual_sensitive.load(Ordering::SeqCst) {
-            bail!("screen images, OCR and video are disabled for this data volume after vault secret typing; clear the persistent data volume to reset this state");
-        }
-        // Secret typing takes the same lock before setting the persistent suppression marker.
-        // Recheck under the lock so neither the screen query nor a fresh capture starts after
-        // secret entry begins.
+        // Secret typing takes the same lock. Live perception resumes after typing, but
+        // no capture may interleave with sensitive keystrokes.
         let visual = match deadline {
             Some(_) => match self.visual_capture.try_lock() {
                 Ok(visual) => visual,
@@ -1032,9 +1128,6 @@ impl ToolHandler {
             },
             None => self.visual_capture.lock().unwrap(),
         };
-        if self.visual_sensitive.load(Ordering::SeqCst) {
-            bail!("screen images, OCR and video are disabled for this data volume after vault secret typing; clear the persistent data volume to reset this state");
-        }
         // until_text has one absolute deadline across both Sway and Grim. The returned View is
         // reused by the caller so the wait poll never performs an extra unbounded screen query.
         let screen = match deadline {
@@ -1060,9 +1153,9 @@ impl ToolHandler {
         }
         drop(visual);
 
-        let installed = installed_tesseract_languages(deadline)?;
+        let installed = installed_tesseract_languages(local, deadline)?;
         let language = select_tesseract_languages(&self.persona.identity.languages, &installed)?;
-        let tsv = run_tesseract(frame, &language, deadline)?;
+        let tsv = run_tesseract(local, frame, &language, deadline)?;
         let origin = requested_region.map_or((0, 0), |_| {
             let layout = capture_region.expect("a requested OCR region has a Grim region");
             (
@@ -1074,7 +1167,7 @@ impl ToolHandler {
 
         // Cache only if the pixels stayed unchanged while Tesseract ran.
         let still_same_frame = capture().ok().is_some_and(|after| image_fingerprint(&after) == frame_hash);
-        if still_same_frame && !self.visual_sensitive.load(Ordering::SeqCst) {
+        if still_same_frame {
             self.ocr_cache.lock().unwrap().insert(cache_key, frame_hash, lines.clone());
         }
         Ok((view, lines))
@@ -1184,7 +1277,7 @@ impl ToolHandler {
             "next_from_step": events.last().filter(|_| step.is_none() && events.len() == limit).map(|e| e.step + 1),
             "steps": events,
         }));
-        let want = if self.visual_sensitive.load(Ordering::SeqCst) {
+        let want = if self.recording_sensitive.load(Ordering::SeqCst) {
             0
         } else if step.is_some() {
             1
@@ -1228,6 +1321,12 @@ impl ToolHandler {
             "mismatches": failed,
             "route": self.route.health(),
             "session": session,
+            "visual_perception": "available",
+            "recording_visuals": if self.recording_sensitive.load(Ordering::SeqCst) { "paused_during_secret" } else { "enabled" },
+            "humanizer": {
+                "mouse_model": self.persona.humanizer.mouse_model,
+                "calibration": taboom_humanizer::calibration::status(),
+            },
         }))
     }
 
@@ -1306,7 +1405,7 @@ impl ToolHandler {
             let _ = mgr.release(client_id);
             return ToolResult::err(&format!("could not read the keyboard layout from vinput: {e:#}"));
         }
-        self.local.set_seed(self.persona.seed());
+        self.local.set_humanizer(self.persona.seed(), self.persona.humanizer.mouse_model);
         ToolResult::ok(json!({ "status": "started", "lease_id": lease_id, "persona": self.persona.name }))
     }
 
@@ -1343,7 +1442,7 @@ impl ToolHandler {
             "challenge_type": challenge_type,
             "detected_cues": cue_lines,
             "suggestion": suggestion,
-            "all_text_sample": &all_text[..all_text.len().min(500)],
+            "all_text_sample": all_text.chars().take(500).collect::<String>(),
         })))
     }
 
@@ -1781,7 +1880,7 @@ fn select_tesseract_languages(languages: &[String], installed: &HashSet<String>)
     Ok(mapped.join("+"))
 }
 
-fn installed_tesseract_languages(deadline: Option<Instant>) -> Result<HashSet<String>> {
+fn installed_tesseract_languages(local: &LocalExecutor, deadline: Option<Instant>) -> Result<HashSet<String>> {
     static INSTALLED: OnceLock<Mutex<Option<HashSet<String>>>> = OnceLock::new();
     let cache = INSTALLED.get_or_init(|| Mutex::new(None));
     let mut cached = match cache.try_lock() {
@@ -1794,7 +1893,7 @@ fn installed_tesseract_languages(deadline: Option<Instant>) -> Result<HashSet<St
     }
 
     let timeout = ocr_timeout(deadline)?;
-    let mut child = Command::new("tesseract")
+    let mut child = local.command("tesseract")
         .arg("--list-langs")
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -1824,8 +1923,8 @@ fn installed_tesseract_languages(deadline: Option<Instant>) -> Result<HashSet<St
     Ok(languages)
 }
 
-fn run_tesseract(image: Vec<u8>, languages: &str, deadline: Option<Instant>) -> Result<String> {
-    let mut child = Command::new("tesseract")
+fn run_tesseract(local: &LocalExecutor, image: Vec<u8>, languages: &str, deadline: Option<Instant>) -> Result<String> {
+    let mut child = local.command("tesseract")
         .args(["stdin", "stdout", "-l", languages, "tsv"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -2141,6 +2240,8 @@ mod tests {
                                 Some(c) if c.is_ascii_lowercase() => format!("ok {} 0", 16 + c as u32 - 'a' as u32),
                                 _ => "err no key".to_string(),
                             },
+                            None if line == "state" => "ok 0 0 0 0 0".to_string(),
+                            None if line == "pos" => "ok 0 0".to_string(),
                             None => "ok".to_string(),
                         };
                         if writeln!(writer, "{reply}").is_err() {
@@ -2157,6 +2258,115 @@ mod tests {
         let home = tempfile::tempdir().unwrap().keep();
         let local = LocalExecutor::with_input(fake_vinput(&home));
         build(&home, "name = \"shop\"\ncountry = \"DE\"", route_ok, local)
+    }
+
+    fn fake_desktop(home: &Path) -> LocalExecutor {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = home.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let outputs = json!([{"name":"HEADLESS-1", "active":true,"scale":1.0,
+            "current_mode":{"width":1280,"height":720},"rect":{"x":0,"y":0,"width":1280,"height":720}}]);
+        let tree = json!({"app_id":"google-chrome","focused":true,"fullscreen_mode":0,
+            "rect":{"x":0,"y":0,"width":1280,"height":720},"nodes":[],"floating_nodes":[]});
+        std::fs::write(bin.join("outputs.json"), outputs.to_string()).unwrap();
+        std::fs::write(bin.join("tree.json"), tree.to_string()).unwrap();
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        png.extend(1280u32.to_be_bytes()); png.extend(720u32.to_be_bytes());
+        std::fs::write(bin.join("screen.png"), png).unwrap();
+        let mut crop_png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        crop_png.extend(1200u32.to_be_bytes()); crop_png.extend(56u32.to_be_bytes());
+        std::fs::write(bin.join("crop.png"), crop_png).unwrap();
+        let scripts = [
+            ("swaymsg", format!("#!/bin/sh\ncase \"$*\" in *get_tree*) exec /bin/cat '{}/tree.json';; *) exec /bin/cat '{}/outputs.json';; esac\n", bin.display(), bin.display())),
+            ("grim", format!("#!/bin/sh\ncase \"$*\" in *'150,48 600x28'*) exec /bin/cat '{}/crop.png';; *) exec /bin/cat '{}/screen.png';; esac\n", bin.display(), bin.display())),
+            ("tesseract", "#!/bin/sh\ncase \"$*\" in *--list-langs*) printf 'List of available languages (2):\\neng\\ndeu\\n';; *) /bin/cat >/dev/null; printf 'level\\tpage_num\\tblock_num\\tpar_num\\tline_num\\tword_num\\tleft\\ttop\\twidth\\theight\\tconf\\ttext\\n5\\t1\\t1\\t1\\t1\\t1\\t150\\t55\\t90\\t20\\t99\\tgithub.com\\n';; esac\n".into()),
+        ];
+        for (name, script) in scripts {
+            let path = bin.join(name);
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        LocalExecutor::with_input(fake_vinput(home)).with_test_path(&bin)
+    }
+
+    #[test]
+    fn secret_typing_resumes_live_perception_and_saved_frames() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("run")).unwrap();
+        let vault = Arc::new(Vault::open(home.path()));
+        vault.init("test-passphrase").unwrap();
+        vault.add_secret("login", b"abc", vec!["github.com".into()], SecretType::Password).unwrap();
+        let audit = Arc::new(AuditLog::open(&home.path().join("audit.jsonl")).unwrap());
+        let handler = build(home.path(), "name = \"shop\"\ncountry = \"DE\"", true, fake_desktop(home.path()))
+            .with_secret_context(vault, audit, Arc::new(FixedDomain), home.path()).unwrap();
+        assert!(!handler.handle(ToolCall::SessionStart, "agent").is_error);
+        let typed = handler.handle(ToolCall::Type { text:"<secret>login</secret>".into(), mode:"keys".into(), submit:false }, "agent");
+        assert!(!typed.is_error, "{:?}", typed.error);
+        let screenshot = handler.handle(ToolCall::Screenshot { frame_id:None,max_edge:None,region:None }, "agent");
+        assert!(!screenshot.is_error, "{:?}", screenshot.error);
+        assert_eq!(screenshot.images.len(), 1);
+        for call in [
+            ToolCall::Zoom { region:ToolRegion{x:100,y:50,w:200,h:100} },
+            ToolCall::ReadText { region:None },
+            ToolCall::FindText { text:"github.com".into(),region:None },
+            ToolCall::Wait { ms:Some(1000),until_settled:Some(true),until_text:None },
+        ] {
+            let result = handler.handle(call, "agent");
+            assert!(!result.is_error, "{:?}", result.error);
+        }
+        let id = handler.recorder.current("agent").unwrap();
+        let (events, _) = handler.recorder.events(&id, 1, 100).unwrap();
+        assert!(events.iter().any(|e| e.frame.is_some()));
+        assert!(!handler.recording_sensitive.load(Ordering::SeqCst));
+        let replay = handler.handle(ToolCall::RecordingGet { id:Some(id),step:None,from_step:None,limit:None,frames:true }, "agent");
+        assert!(!replay.images.is_empty());
+        handler.shutdown();
+    }
+
+    #[test]
+    fn batches_execute_in_order_stop_on_error_and_reject_stale_plans() {
+        let home = tempfile::tempdir().unwrap();
+        let handler = build(home.path(), "name = \"shop\"\ncountry = \"DE\"", true, fake_desktop(home.path()));
+        handler.recording_sensitive.store(true, Ordering::SeqCst);
+        assert!(!handler.handle(ToolCall::SessionStart, "agent").is_error);
+        let frame = handler.handle(ToolCall::Screenshot { frame_id:None,max_edge:None,region:None }, "agent").content["frame_id"].as_str().unwrap().to_string();
+        let result = handler.handle(ToolCall::BatchActions { frame_id:frame.clone(), actions:vec![
+            ToolCall::Type { text:"abc".into(),mode:"keys".into(),submit:false },
+            ToolCall::Key { combo:"Tab".into() },
+            ToolCall::Type { text:"def".into(),mode:"keys".into(),submit:false },
+        ] }, "agent");
+        assert!(!result.is_error, "{:?}", result.error);
+        assert_eq!(result.content["completed_actions"], 3);
+        assert_eq!(result.images.len(), 1);
+        assert_eq!(result.content["steps"][1]["tool"], "key");
+        let stale = handler.handle(ToolCall::BatchActions { frame_id:frame, actions:vec![ToolCall::Key { combo:"Tab".into() }] }, "agent");
+        assert!(stale.error.unwrap().contains("stale"));
+        let current = result.content["screenshot"]["frame_id"].as_str().unwrap().to_string();
+        let failed = handler.handle(ToolCall::BatchActions { frame_id:current.clone(), actions:vec![
+            ToolCall::Wait { ms:Some(1),until_settled:None,until_text:None },
+            ToolCall::Type { text:"bad".into(),mode:"invalid".into(),submit:false },
+            ToolCall::Type { text:"never".into(),mode:"keys".into(),submit:false },
+        ] }, "agent");
+        assert!(failed.is_error);
+        assert_eq!(failed.content["completed_actions"], 1);
+        assert_eq!(failed.content["failed_step"], 1);
+        assert_eq!(failed.content["steps"].as_array().unwrap().len(), 2);
+        let submitted = handler.handle(ToolCall::BatchActions { frame_id:failed.content["screenshot"]["frame_id"].as_str().unwrap().into(), actions:vec![
+            ToolCall::Type { text:"abc".into(),mode:"keys".into(),submit:true },
+        ] }, "agent");
+        assert!(submitted.error.unwrap().contains("before submitting"));
+        let before = handler.recorder.events(&handler.recorder.current("agent").unwrap(), 1, 100).unwrap().0.len();
+        let outputs = home.path().join("bin/outputs.json");
+        let mut resized: Value = serde_json::from_slice(&std::fs::read(&outputs).unwrap()).unwrap();
+        resized[0]["current_mode"]["width"] = json!(1024);
+        std::fs::write(outputs, resized.to_string()).unwrap();
+        let resized_batch = handler.handle(ToolCall::BatchActions {
+            frame_id:failed.content["screenshot"]["frame_id"].as_str().unwrap().into(),
+            actions:vec![ToolCall::Key { combo:"Tab".into() }],
+        }, "agent");
+        assert!(resized_batch.error.unwrap().contains("geometry changed"));
+        assert_eq!(handler.recorder.events(&handler.recorder.current("agent").unwrap(), 1, 100).unwrap().0.len(), before);
+        handler.shutdown();
     }
 
     /// The container's real vinput and desktop.
@@ -2253,7 +2463,7 @@ mod tests {
     }
 
     #[test]
-    fn recordings_keep_placeholders_and_visual_suppression_is_sticky() {
+    fn recordings_keep_placeholders_and_migrate_legacy_capture_restrictions() {
         let handler = make_handler(true);
         assert!(!handler.handle(ToolCall::SessionStart, "agent").is_error);
         let refusal = handler.handle(ToolCall::Type {
@@ -2270,13 +2480,13 @@ mod tests {
 
         // Supply one synthetic prior frame, then assert MCP no longer sends it after taint.
         handler.recorder.record("agent", "screenshot", json!({}), None, 1, recording::Frame::Bytes(vec![1, 2, 3], "png"));
-        handler.visual_sensitive.store(true, Ordering::SeqCst);
+        handler.recording_sensitive.store(true, Ordering::SeqCst);
         let page = handler.handle(ToolCall::RecordingGet {
             id: Some(id), step: None, from_step: Some(1), limit: Some(10), frames: true,
         }, "agent");
         assert!(page.images.is_empty());
         let screenshot = handler.handle(ToolCall::Screenshot { frame_id: None, max_edge: None, region: None }, "agent");
-        assert!(screenshot.error.unwrap().contains("persistent data volume"));
+        assert!(!screenshot.error.unwrap_or_default().contains("persistent data volume"));
 
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join("run")).unwrap();
@@ -2289,15 +2499,17 @@ mod tests {
             true,
             LocalExecutor::with_input(fake_vinput(home.path())),
         ).with_secret_context(Arc::clone(&vault), Arc::clone(&audit), Arc::new(FixedDomain), home.path()).unwrap();
-        first.mark_visual_sensitive().unwrap();
-        assert!(home.path().join("run/secret-visuals-disabled").exists());
+        first.mark_recording_sensitive().unwrap();
+        assert!(!home.path().join("run/secret-visuals-disabled").exists());
+        std::fs::write(home.path().join("run/secret-visuals-disabled"), b"legacy marker").unwrap();
         let restored = build(
             home.path(),
             "name = \"shop\"\ncountry = \"DE\"",
             true,
             LocalExecutor::new(),
         ).with_secret_context(vault, audit, Arc::new(FixedDomain), home.path()).unwrap();
-        assert!(restored.visual_sensitive.load(Ordering::SeqCst));
+        assert!(!restored.recording_sensitive.load(Ordering::SeqCst));
+        assert!(!home.path().join("run/secret-visuals-disabled").exists());
     }
 
     #[test]

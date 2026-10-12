@@ -218,13 +218,26 @@ impl LocalExecutor {
 
     /// The persona's stable style (its "habits", from `humanizer.seed`), while every session
     /// draws fresh randomness so no two sessions move or type alike.
-    pub fn set_seed(&self, seed: u64) {
-        let config = HumanizerConfig::from_seed(seed);
+    pub fn set_humanizer(&self, seed: u64, mouse_model: taboom_core::persona::MouseModel) {
+        let mut config = HumanizerConfig::from_seed(seed);
+        config.style.mouse_model = mouse_model;
         let mut idle = self.idle.lock().unwrap();
         idle.style = config.style.clone();
         idle.rng = StdRng::from_entropy();
         idle.reset = true;
         *self.human.lock().unwrap() = (config, StdRng::from_entropy());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_path(mut self, path: &Path) -> Self {
+        self.env.push(("PATH".into(), path.display().to_string()));
+        self
+    }
+
+    pub(crate) fn command(&self, program: &str) -> Command {
+        let mut command = Command::new(program);
+        command.envs(self.env.iter().map(|(k, v)| (k, v)));
+        command
     }
 
     fn run(&self, prog: &str, args: &[String]) -> Result<Vec<u8>> {
@@ -843,8 +856,41 @@ pub fn finish_video(mut child: Child, mkv: &Path) -> Result<PathBuf> {
     if !status.success() {
         bail!("ffmpeg could not remux {}; the .mkv is kept", mkv.display());
     }
+    let output = append_video_segment(&mp4)?;
     let _ = std::fs::remove_file(mkv);
-    Ok(mp4)
+    Ok(output)
+}
+
+/// Preserve pre-secret video and append each resumed clip atomically to the public video.
+fn append_video_segment(segment: &Path) -> Result<PathBuf> {
+    let dir = segment.parent().context("video segment has no parent")?;
+    let output = dir.join("video.mp4");
+    if segment == output { return Ok(output); }
+    if !output.exists() {
+        std::fs::rename(segment, &output)?;
+        return Ok(output);
+    }
+    let name = segment.file_name().and_then(|n| n.to_str()).context("video segment name is not UTF-8")?;
+    if !name.starts_with("video-part-") || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.') {
+        bail!("invalid video segment name");
+    }
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let manifest = dir.join(format!(".video-concat-{suffix}.txt"));
+    let joined = dir.join(format!(".video-joined-{suffix}.mp4"));
+    std::fs::write(&manifest, format!("file 'video.mp4'\nfile '{name}'\n"))?;
+    let result = Command::new("ffmpeg")
+        .args(["-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"])
+        .arg(&manifest)
+        .args(["-c", "copy", "-movflags", "+faststart"])
+        .arg(&joined)
+        .status();
+    let _ = std::fs::remove_file(manifest);
+    if !result.context("joining resumed recording clips")?.success() {
+        bail!("video concatenation failed; the previous video and resumed clip are preserved");
+    }
+    std::fs::rename(&joined, &output).context("publishing joined session video")?;
+    let _ = std::fs::remove_file(segment);
+    Ok(output)
 }
 
 fn exchange(conn: &mut BufReader<UnixStream>, lines: &[String]) -> Result<Vec<String>> {
@@ -898,8 +944,9 @@ fn omnibox_crop_from_geometry(
     // keep the OCR band around the URL text baseline, away from tab titles and page content.
     const URL_TEXT_BAND_TOP: i64 = 48;
     const URL_TEXT_BAND_HEIGHT: i64 = 28;
-    const OMNIBOX_LEFT_INSET: i64 = 120;
-    const OMNIBOX_RIGHT_INSET: i64 = 120;
+    // Keep the site-controls icon at the left and toolbar icons at the right out of OCR.
+    const OMNIBOX_LEFT_INSET: i64 = 150;
+    const OMNIBOX_RIGHT_INSET: i64 = 180;
     const MIN_OMNIBOX_WIDTH: i64 = 160;
 
     if !scale.is_finite() || !(0.5..=8.0).contains(&scale)
@@ -938,7 +985,12 @@ fn find_focused_with_fullscreen(
     node: &serde_json::Value,
     inherited_fullscreen: bool,
 ) -> Option<(&serde_json::Value, bool)> {
-    let fullscreen = inherited_fullscreen || node["fullscreen_mode"].as_i64().unwrap_or(0) != 0;
+    // Sway emits fullscreen_mode=1 for workspace nodes as an i3 compatibility value.
+    // Only container/window flags describe actual fullscreen state:
+    // https://github.com/swaywm/sway/blob/1.7/sway/ipc-json.c
+    let is_container = matches!(node["type"].as_str(), Some("con" | "floating_con"));
+    let fullscreen = inherited_fullscreen
+        || (is_container && node["fullscreen_mode"].as_i64().unwrap_or(0) != 0);
     if node["focused"] == true {
         return Some((node, fullscreen));
     }
@@ -1084,6 +1136,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn video_segments_preserve_the_primary_recording_and_reject_bad_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("video-part-first.mp4");
+        std::fs::write(&first, b"first clip").unwrap();
+        let primary = append_video_segment(&first).unwrap();
+        assert_eq!(std::fs::read(&primary).unwrap(), b"first clip");
+        assert!(!first.exists());
+        let invalid = dir.path().join("other.mp4");
+        std::fs::write(&invalid, b"second clip").unwrap();
+        assert!(append_video_segment(&invalid).is_err());
+        assert_eq!(std::fs::read(primary).unwrap(), b"first clip");
+        assert_eq!(std::fs::read(invalid).unwrap(), b"second clip");
+    }
+
+    #[test]
     fn sway_screen_dimensions_keep_the_active_output_scale() {
         let outputs = br#"[{"active":true,"current_mode":{"width":3840,"height":2160},"scale":2.0}]"#;
         assert_eq!(screen_from_outputs(outputs).unwrap(), Screen { width: 3840, height: 2160, scale: 2.0 });
@@ -1148,6 +1215,7 @@ mod tests {
     #[test]
     fn fullscreen_state_inherits_from_focused_window_ancestors() {
         let tree = serde_json::json!({
+            "type": "con",
             "fullscreen_mode": 1,
             "focused": false,
             "nodes": [{ "focused": false, "nodes": [], "floating_nodes": [
@@ -1160,15 +1228,28 @@ mod tests {
     }
 
     #[test]
+    fn workspace_compatibility_flags_do_not_make_normal_chrome_fullscreen() {
+        let mut tree = serde_json::json!({
+            "type": "workspace", "fullscreen_mode": 1, "focused": false,
+            "nodes": [{"type":"con", "app_id":"google-chrome", "focused":true, "fullscreen_mode":0}]
+        });
+        assert!(!find_focused_with_fullscreen(&tree, false).unwrap().1);
+        for mode in [1, 2] {
+            tree["nodes"][0]["fullscreen_mode"] = serde_json::json!(mode);
+            assert!(find_focused_with_fullscreen(&tree, false).unwrap().1);
+        }
+    }
+
+    #[test]
     fn omnibox_crop_uses_focused_window_bounds_and_output_scale() {
         let crop = omnibox_crop_from_geometry(
             LayoutRect { x: 20, y: 30, width: 1200, height: 800 },
             LayoutRect { x: 0, y: 0, width: 1920, height: 1080 },
             2.0,
         ).unwrap();
-        assert_eq!(crop.rect.x, 140);
+        assert_eq!(crop.rect.x, 170);
         assert_eq!(crop.rect.y, 78);
-        assert_eq!(crop.rect.w, 960);
+        assert_eq!(crop.rect.w, 870);
         assert_eq!(crop.rect.h, 28);
         assert_eq!(crop.scale, 2.0);
     }
