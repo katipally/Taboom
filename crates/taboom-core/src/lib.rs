@@ -2,6 +2,8 @@ pub mod admin;
 pub mod consistency;
 pub mod hardware;
 pub mod persona;
+pub mod sites;
+pub mod warmth;
 
 pub use crate::persona::check_name;
 

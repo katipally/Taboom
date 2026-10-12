@@ -50,7 +50,14 @@ fn write_runtime(p: &Persona, home: &Path) -> Result<()> {
         ),
     )?;
     std::fs::write(&fonts, fontconfig(&p.identity.languages))?;
-    write_preferences(&profile.join("Default").join("Preferences"), &p.accept_languages())
+    let default_dir = profile.join("Default");
+    write_preferences(&default_dir.join("Preferences"), &p.accept_languages())?;
+    if !default_dir.join("History").exists() {
+        taboom_core::warmth::seed_profile(&default_dir, p)?;
+        taboom_core::warmth::enhance_preferences(&default_dir.join("Preferences"), p)?;
+        println!("[taboom] seeded profile warmth for {}", p.name);
+    }
+    Ok(())
 }
 
 fn env_file(p: &Persona, profile: &Path, fonts: &Path) -> String {
@@ -95,7 +102,7 @@ fn env_file_with_hardware(
     ];
     if p.browser.engine == Engine::Fortress {
         // The upstream launcher normally replaces both values with its generic defaults. Keep
-        // the persona's locale and Taboom's language-filtered font configuration in force.
+        // the persona's locale and Taboom's language-aware font configuration in force.
         vars.push(("TILION_TZ", p.timezone.clone()));
         vars.push(("TILION_LANG", p.accept_languages()));
         vars.push(("TABOOM_FONTCONFIG_FILE", fonts.display().to_string()));
@@ -150,8 +157,8 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-/// Families a machine set up for these languages would have. The image carries more; the rest
-/// are hidden so the font list stays coherent with the locale.
+/// Families the persona should keep available based on its languages. The installed fonts
+/// remain available as fallbacks; a broad reject glob can leave Fontconfig with no fonts.
 fn font_families(languages: &[String]) -> Vec<&'static str> {
     let mut families = vec![
         "Liberation Sans", "Liberation Serif", "Liberation Mono",
@@ -192,7 +199,6 @@ fn fontconfig(languages: &[String]) -> String {
   <selectfont>
     <acceptfont>
 {accept}    </acceptfont>
-    <rejectfont><glob>/*</glob></rejectfont>
   </selectfont>
 </fontconfig>
 "#

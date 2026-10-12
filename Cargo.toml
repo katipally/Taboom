@@ -40,3 +40,5 @@ tempfile = "3"
 axum = "0.7"
 base64 = "0.22"
 tokio-stream = "0.1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+md-5 = "0.10"
