@@ -1,12 +1,24 @@
 # Taboom
 
-A self-hosted computer-use box for AI agents. The agent gets a real Linux desktop with a real
-browser, sees it only through screenshots, and drives it only with mouse and keyboard input.
-Nothing is injected into the page.
+Taboom is an experimental research project exploring how far AI agents can approach human
+browser interaction, from mouse movements and typing rhythm to observing pages, choosing actions,
+and recovering from mistakes.
+
+It provides a self-hosted Linux desktop in Docker for an external AI agent. The agent observes
+the browser through screenshots and local OCR, and operates it with mouse and keyboard input.
+Taboom supplies the MCP tools and environment; the connected agent supplies the model and reasoning
+loop. Nothing is injected into the page.
 
 Taboom is a real MCP server. Start it once and any MCP client can connect: Claude Code, Claude
 Desktop, Cursor, VS Code, your own agent loop, or plain `curl`. You can watch the agent live in
 your browser, and every session is recorded step by step so you can replay or share it.
+
+**Research status:** the runtime currently uses heuristic motion and timing models with randomized
+parameters and stable persona habits. The lab evaluates exported Rust traces, including comparisons
+with derived human interaction data. Its parameter-fitting utilities are not yet connected to the
+runtime. Playbooks and MCP prompts guide the external agent's decisions; they do not enforce or
+establish human-like reasoning. Passing regression checks does not demonstrate that behavior is
+indistinguishable from a person. See the [evaluation lab](lab/README.md) for protocols and limitations.
 
 ```
  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
@@ -74,14 +86,24 @@ container's desktop and Chrome at boot. More personas means more containers (see
 
 ## 1. Quick start (Docker)
 
-You need Docker with Compose v2. Nothing else. Clone this repository from GitHub or download and
-extract its ZIP, then run this from the repository root:
+You need Docker with Compose v2. Clone this repository from GitHub or download and extract its ZIP.
+To build the checked-out source, run this from the repository root:
 
 ```bash
 docker compose up -d --build
 ```
 
-The first build compiles the Rust code, so give it a few minutes. After that it starts in seconds.
+The first source build compiles the Rust code, so give it a few minutes. Later starts take seconds.
+
+After a GitHub release is available, Compose can use its prebuilt GHCR image instead:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Set `TABOOM_VERSION` in `.env` to pin a release instead of using `latest`. Both paths run the
+same self-hosted container; neither connects to a Taboom-hosted service.
 
 What happens on `up`:
 
@@ -122,13 +144,14 @@ The logs print clickable links:
   └─────────────────────────────────────────────────────────────────────────
 ```
 
-Or just open **http://localhost:3456/**. It has Watch live and Take over buttons, the connect
-command, and your recent sessions with replay and video links.
+Or open **http://localhost:3456/** for the dashboard. It has live desktop controls, MCP setup
+details, and a searchable, paginated session library with replay and video actions. When MCP tokens
+are configured, enter a bearer token to unlock the session library in that browser tab.
 
 In Docker Desktop, the two port links next to the container name do the same:
 
 ```
- 3456:3456  ->  home page (links, connect command, recent sessions)
+ 3456:3456  ->  workspace dashboard, sessions, MCP endpoint, and recordings
  6080:6080  ->  live view, watch only
 ```
 
@@ -142,8 +165,9 @@ container.
 
 | Port | Path | What it is |
 |---|---|---|
-| **3456** | `/` | Home page: Watch live / Take over buttons, connect command, recent sessions |
-| 3456 | `/mcp` | The MCP server (streamable HTTP, `POST`) |
+| **3456** | `/` | Workspace dashboard: live controls, agent setup, searchable sessions and recordings |
+| 3456 | `/api/sessions` | Paginated session metadata; bearer-authenticated when MCP tokens are configured |
+| 3456 | `/mcp` | MCP Streamable HTTP (`POST`; `GET` returns 405 because server-initiated SSE is not used) |
 | 3456 | `/recordings/<id>?exp=..&sig=..` | Signed replay page; `/video/video.mp4` and `/frames/<n>.png` under it |
 | 3456 | `/healthz` | 200 when vinput, sway and Chrome all answer; 503 with the failing part otherwise. The Compose healthcheck uses it |
 | **6080** | `/` | Redirects to the live view |
@@ -162,6 +186,7 @@ Smoke-test the MCP endpoint with curl:
 ```bash
 curl -s http://localhost:3456/mcp \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
 ```
 
@@ -177,7 +202,8 @@ The server speaks MCP over **streamable HTTP** at one URL:
  http://localhost:3456/mcp
 ```
 
-Any client that supports HTTP MCP servers can use it directly.
+Any client that supports MCP Streamable HTTP can use it directly. The server exposes 38 tools and
+read-only resources for its agent playbook and site notes.
 
 ### Claude Code
 
@@ -223,10 +249,14 @@ It is plain JSON-RPC 2.0 over POST. The flow any client follows:
 ```
  client                                   taboom
    │ POST initialize ───────────────────────>│
-   │<───────────── protocolVersion, tools cap │
+   │<──────── protocolVersion, tools/resources │
    │ POST notifications/initialized ────────>│  202, no body
+   │ POST resources/list ──────────────────>│
+   │<──────────── Taboom playbooks ─────────│
+   │ POST resources/read ──────────────────>│
+   │<──────────── playbook text ────────────│
    │ POST tools/list ───────────────────────>│
-   │<──────────────────────── 31 tools        │
+   │<──────────────────────── 38 tools        │
    │ POST tools/call session_start ─────────>│
    │ POST tools/call screenshot ────────────>│
    │<─────────────── image block (PNG)        │
@@ -234,6 +264,9 @@ It is plain JSON-RPC 2.0 over POST. The flow any client follows:
 ```
 
 Any official MCP SDK (Python, TypeScript, etc.) works with its streamable HTTP client.
+Send `Accept: application/json, text/event-stream` on POST requests and use the negotiated
+`MCP-Protocol-Version` header after initialization. Taboom responds with JSON and returns 405 to GET
+requests because it does not offer an SSE stream.
 
 ---
 
@@ -324,10 +357,11 @@ live view remains visible to a person who opens it.
 events it logs every MCP tool call: tool name, client and whether it succeeded, never the
 arguments.
 
-For better agent behavior, load the playbook in [`skills/SKILL.md`](skills/SKILL.md) into your
-agent's instructions (Claude Code: copy it into a skill or your `CLAUDE.md`). It covers popups,
-loop detection, secrets, and how to request manual user control through the live view. Site notes
-live in `skills/sites/`.
+Taboom includes its playbook as MCP resources. On connection, the server also sends short
+instructions that point to `taboom://skills/SKILL.md`. Clients can list the site notes with
+`resources/list` and read them with `resources/read`. MCP clients decide how to use resources, so
+some may require you to ask the agent to read the playbook. The files remain available in
+[`skills/`](skills/) for client-specific installations.
 
 ---
 
@@ -436,7 +470,12 @@ available because it ends before the secret was typed.
  recording_get        clipboard_set, view_url, computer *
  recording_share
 
- 31 tools in total.
+ Additional visual tools: find_text, read_text
+ Persona files: persona_generate, persona_list
+ Challenges: detect_challenge, challenge_click_hold, challenge_slider,
+             challenge_select, challenge_handoff
+
+ 38 tools in total.
 ```
 
 `**` `open_url` is keyboard only: super+b (focuses the browser, or reopens it if closed), ctrl+t,
@@ -546,9 +585,14 @@ on its own.
 |---|---|---|
 | `TABOOM_MCP_PORT` | `3456` | Host port for MCP, the home page and recordings. The container always listens on 3456 inside. |
 | `TABOOM_VIEW_PORT` | `6080` | Host port for the live view. The container always listens on 6080 inside. |
-| `TABOOM_PUBLISH` | `127.0.0.1` | Host interface for both ports. `0.0.0.0` exposes them to your network. |
+| `TABOOM_MCP_PUBLISH` | `127.0.0.1` | Host interface for MCP. Network publication requires `TABOOM_MCP_TOKENS`. |
+| `TABOOM_VIEW_PUBLISH` | `127.0.0.1` | Host interface for the unauthenticated live view. Keep it on loopback or a private network. |
+| `TABOOM_PUBLISH` | unset | Deprecated fallback for both publish addresses. Prefer the separate variables. |
+| `TABOOM_VERSION` | `latest` | GHCR image tag used by Compose. Use `docker compose up -d --build` to build the checked-out source. |
 | `TABOOM_PUBLIC_URL` | `http://localhost:<MCP port>` | Base of recording share links. Set it to the address other people use to reach this box. |
-| `TABOOM_MCP_TOKENS` | empty | Bearer tokens, `name=token,name2=token2`. Empty means no auth. |
+| `TABOOM_MCP_TOKENS` | empty | Bearer tokens, `name=token,name2=token2`, for MCP calls and the session library. Empty means no auth. |
+| `TABOOM_MCP_ALLOWED_ORIGINS` | empty | Extra exact browser origins allowed. Loopback and the origin in `TABOOM_PUBLIC_URL` are allowed automatically. |
+| `TABOOM_VIEW_URL` | `http://localhost:<view port>/vnc.html?...` | Browser-visible live-view URL used by the dashboard and `view_url`. Set it when the view is reached through a remote host or reverse proxy. |
 | `TABOOM_PERSONA` | `default` | The persona this container runs: `personas/<name>.toml` in the data volume. |
 | `TABOOM_VAULT_PASSPHRASE_FILE` | `/run/secrets/taboom_vault_passphrase` | File holding the vault passphrase, read at boot when the route has `auth = "vault:<name>"`. |
 | `TABOOM_ROUTE_RECHECK_S` | `300` | Seconds between route re-checks (minimum 30). |
@@ -561,12 +605,14 @@ Example `.env`:
 ```bash
 TABOOM_MCP_PORT=4456
 TABOOM_VIEW_PORT=7080
+TABOOM_MCP_PUBLISH=127.0.0.1
+TABOOM_VIEW_PUBLISH=127.0.0.1
 TABOOM_MCP_TOKENS=claude=change-me-1,cursor=change-me-2
 ```
 
 With that file the links become `http://localhost:4456/` (home and MCP at `/mcp`) and
-`http://localhost:7080/` (live view). `TABOOM_PUBLIC_URL` and the live view link inside the
-container are derived from these, so you only set the ports.
+`http://localhost:7080/` (live view). `TABOOM_PUBLIC_URL` and `TABOOM_VIEW_URL` are derived from
+these ports unless you override them for a remote host or reverse proxy.
 
 Apply changes with `docker compose up -d` (no rebuild needed).
 
@@ -683,7 +729,7 @@ count; an explicit `cpus` value overrides that. `humanizer.seed` (or its stable 
 fallback) is sent as both `--uxr-canvas-seed` and `--uxr-audio-seed`. These two seeds pin canvas and
 audio noise; they do not freeze every part of Fortress's generated identity. Taboom never sends
 `--user-agent`, which Fortress documents as breaking consistency between the UA string and
-Client-Hints. The ordinary `TZ`, `LANG`, `LANGUAGE`, XKB and persona-filtered fontconfig setup still
+Client-Hints. The ordinary `TZ`, `LANG`, `LANGUAGE`, XKB and persona-aware fontconfig setup still
 applies. Taboom uses Fortress's upstream launcher for its browser setup while directing its
 fontconfig choice back to Taboom's existing filtered configuration; its private CDP pipe remains
 owned by `taboomd`.
@@ -785,15 +831,18 @@ Logins survive `docker compose down` and rebuilds. Only `docker compose down -v`
 ## 8. Auth and remote access
 
 By default both ports are published on `127.0.0.1` only. Only programs on your own machine can
-reach them.
+reach them. To expose MCP to your network while keeping the live view local, set
+`TABOOM_MCP_PUBLISH=0.0.0.0`, leave `TABOOM_VIEW_PUBLISH=127.0.0.1`, and configure bearer tokens.
+Taboom refuses to start MCP on a non-loopback published address when no tokens are configured.
 
 To let other machines (or several agents with separate identities) connect:
 
 ```
- 1. set tokens            TABOOM_MCP_TOKENS=claude=tok-a,cursor=tok-b
- 2. publish widely        TABOOM_PUBLISH=0.0.0.0
- 3. restart               docker compose up -d
- 4. each client sends     Authorization: Bearer tok-a
+  1. set tokens            TABOOM_MCP_TOKENS=claude=tok-a,cursor=tok-b
+  2. publish MCP           TABOOM_MCP_PUBLISH=0.0.0.0
+     keep live view local  TABOOM_VIEW_PUBLISH=127.0.0.1 (the default)
+  3. restart               docker compose up -d
+  4. each client sends     Authorization: Bearer tok-a
 ```
 
 Each token name is its own session holder. Without tokens every client is `anonymous` and they all
@@ -801,11 +850,15 @@ share one identity, so two agents can step on each other.
 
 A request without a valid token gets `401 unauthorized`. The server speaks plain HTTP, so if it
 crosses an untrusted network put it behind a TLS reverse proxy (Caddy, nginx) or a private
-network like Tailscale.
+network like Tailscale. Browser-hosted MCP clients with a different origin must add that exact
+origin to `TABOOM_MCP_ALLOWED_ORIGINS`. The origin in `TABOOM_PUBLIC_URL` is allowed automatically,
+which lets the dashboard unlock its session list on that host.
 
-Tokens protect `/mcp` only. The live view on `:6080` has no password, and anyone holding a
-recording share link can open that replay. On `0.0.0.0`, put port 6080 behind the same private
-network or proxy auth, and set `TABOOM_PUBLIC_URL` so share links point at the right host.
+Tokens protect `/mcp` and `/api/sessions`. The dashboard itself remains public, but hides session
+data until a token unlocks it in the current browser tab. The live view on `:6080` has no password,
+and anyone holding a recording share link can open that replay. Keep the live view on loopback
+unless it is behind a private network or proxy authentication, and set `TABOOM_PUBLIC_URL` so share
+links point at the right host.
 
 ---
 
@@ -892,6 +945,8 @@ docker compose exec taboom grim /tmp/s.png && docker compose cp taboom:/tmp/s.pn
                                        or the proxy died. persona_status shows why;
                                        actions resume after a passing re-check
  401 unauthorized                      tokens are set; add the Authorization header
+ MCP refuses network publish            set TABOOM_MCP_TOKENS before publishing MCP beyond loopback
+ MCP origin refused                     add the browser client's exact origin to TABOOM_MCP_ALLOWED_ORIGINS
  port 3456 or 6080 already in use      set TABOOM_MCP_PORT / TABOOM_VIEW_PORT in .env,
                                        docker compose up -d, re-add the MCP client
                                        with the new URL
@@ -923,7 +978,17 @@ cd lab && pip install -e ".[dev]" && pytest   # eval lab (Python)
 
 After changing Rust code, rebuild the container: `docker compose up -d --build`.
 
-The Docker-only architecture and development notes live in [`PLAN.md`](PLAN.md).
+The Docker-only architecture and development notes live in [`docs/PLAN.md`](docs/PLAN.md).
+
+### Publishing a release
+
+Update the workspace version in `Cargo.toml`, run the checks above, then push a matching version
+tag such as `v0.1.0`. The release workflow builds Chrome images for `linux/amd64` and `linux/arm64`
+in GHCR and creates a GitHub release with generated notes. Fortress remains an opt-in source build.
+
+After the first publish, set the GHCR package visibility to public in the repository's Packages
+settings so self-hosters can pull without logging in. Users can pin the image with `TABOOM_VERSION`
+in `.env`; `.env.example` shows the available deployment settings.
 
 ---
 
@@ -944,5 +1009,5 @@ The Docker-only architecture and development notes live in [`PLAN.md`](PLAN.md).
  image/                Chrome policy installed in the container
  skills/               agent playbook (SKILL.md) and per-site notes
  lab/                  Python eval lab: recorder, detector, model fitting
- PLAN.md               Docker-only architecture and development notes
+ docs/PLAN.md          Docker-only architecture and development notes
 ```

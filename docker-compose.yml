@@ -1,5 +1,6 @@
 services:
   taboom:
+    image: ghcr.io/katipally/taboom:${TABOOM_VERSION:-latest}
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -13,10 +14,10 @@ services:
     # that hold the profile lock, and the browser can never be reopened
     init: true
     ports:
-      # set TABOOM_PUBLISH=0.0.0.0 to reach it from other machines (then also set tokens)
-      - "${TABOOM_PUBLISH:-127.0.0.1}:${TABOOM_MCP_PORT:-3456}:3456"
-      # live view in the browser (noVNC); it has no password, so keep it private
-      - "${TABOOM_PUBLISH:-127.0.0.1}:${TABOOM_VIEW_PORT:-6080}:6080"
+      # MCP can be network-reachable while the unauthenticated live view stays local.
+      # TABOOM_PUBLISH remains as a fallback for existing .env files.
+      - "${TABOOM_MCP_PUBLISH:-${TABOOM_PUBLISH:-127.0.0.1}}:${TABOOM_MCP_PORT:-3456}:3456"
+      - "${TABOOM_VIEW_PUBLISH:-${TABOOM_PUBLISH:-127.0.0.1}}:${TABOOM_VIEW_PORT:-6080}:6080"
     environment:
       - TABOOM_HOME=/home/taboom/.taboom
       # Manual gauntlet output lives in the bind-mounted lab directory. Git metadata is read-only.
@@ -33,15 +34,18 @@ services:
       # seconds between route re-checks (minimum 30); a failure refuses actions until one passes
       - TABOOM_ROUTE_RECHECK_S=${TABOOM_ROUTE_RECHECK_S:-300}
       - TABOOM_MCP_BIND=0.0.0.0
+      - TABOOM_MCP_PUBLISH=${TABOOM_MCP_PUBLISH:-${TABOOM_PUBLISH:-127.0.0.1}}
       # optional bearer auth, one lease holder per name: agent-a=tok1,agent-b=tok2
       - TABOOM_MCP_TOKENS=${TABOOM_MCP_TOKENS:-}
+      # exact browser Origin allowlist for web-hosted MCP clients, comma-separated
+      - TABOOM_MCP_ALLOWED_ORIGINS=${TABOOM_MCP_ALLOWED_ORIGINS:-}
       # base of shareable recording links; change it when others reach this box by another name
       - TABOOM_PUBLIC_URL=${TABOOM_PUBLIC_URL:-http://localhost:${TABOOM_MCP_PORT:-3456}}
       # optional: delete the oldest finished recordings once they pass this many GB
       - TABOOM_RECORDINGS_MAX_GB=${TABOOM_RECORDINGS_MAX_GB:-}
       # optional: log every mouse, keyboard, and scroll event as JSONL for the eval lab
       - VINPUT_TRACE=${VINPUT_TRACE:-}
-      - TABOOM_VIEW_URL=http://localhost:${TABOOM_VIEW_PORT:-6080}/vnc.html?autoconnect=1&resize=scale&view_only=1
+      - TABOOM_VIEW_URL=${TABOOM_VIEW_URL:-http://localhost:${TABOOM_VIEW_PORT:-6080}/vnc.html?autoconnect=1&resize=scale&view_only=1}
     # room to finalize the session video on `docker stop` (the default is 10s)
     stop_grace_period: 30s
     # Chrome crashes tabs with Docker's default 64 MB /dev/shm

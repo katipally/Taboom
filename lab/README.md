@@ -1,6 +1,7 @@
 # Taboom Eval Lab
 
-Proves the humanizer works. Nothing ships on "looks human".
+Evaluates Taboom's input models with regression tests and comparisons to human interaction data.
+The results describe these specific protocols; they do not prove general human equivalence.
 
 ## Install
 

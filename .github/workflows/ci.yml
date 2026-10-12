@@ -31,3 +31,5 @@ jobs:
           --max-mean-auc 0.97
       - name: Run eval lab tests
         run: python -m pytest lab
+      - name: Validate Docker Compose
+        run: docker compose config --quiet

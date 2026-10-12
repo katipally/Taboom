@@ -3,6 +3,12 @@
 Taboom runs as a single Docker Compose service. The container owns the Linux desktop, Chrome
 instance, MCP server, and live view. Docker Compose builds and owns the runtime lifecycle.
 
+The AI model and reasoning loop belong to an external MCP client. Taboom's research scope includes
+both physical input behavior and guidance for how that agent observes, acts, and recovers. Input
+models execute in the server; decision guidance is supplied through playbooks and MCP prompts and
+depends on the client using them. The current runtime uses heuristic parameters; lab-fitted human
+data parameters are not yet loaded into it.
+
 ## Runtime flow
 
 ```text
@@ -50,9 +56,26 @@ The in-image `taboom` operator CLI manages the vault over the local admin protoc
 
 ## Tool surface
 
+The MCP server sends short operating instructions during initialization and exposes the agent
+playbook and site notes as read-only resources (`taboom://skills/...`). Resource use is controlled
+by the MCP client, so clients that do not load resources automatically may need an explicit request
+to read the playbook. The packaged resources are allow-listed rather than resolved as filesystem
+paths.
+
+The workspace dashboard reads `/api/sessions` for searchable, status-filtered, paginated session
+metadata. When MCP tokens are configured, that API requires a bearer token; the browser stores it
+only in tab-scoped session storage. Replay and video links remain signed and expire after 24 hours.
+
 The live view remains available for watching and direct user control. `view_url` returns those
 links, but Taboom no longer has an agent-managed human handoff workflow. noVNC does not validate
-per-session tokens; signed links are used for recordings only.
+per-session tokens; the session index API uses MCP bearer tokens when configured, and replay links
+remain signed.
+
+The MCP endpoint accepts Streamable HTTP POST requests, returns 405 for GET because it does not
+offer server-sent event streams, validates supplied `Origin` headers, handles preflight requests
+for allow-listed browser clients, and accepts only supported `MCP-Protocol-Version` values. MCP
+and live-view host bindings are configured separately. Network publication of MCP requires bearer
+tokens; the live view remains loopback-only by default.
 
 ## Data and lifecycle
 

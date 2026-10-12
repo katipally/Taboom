@@ -2,10 +2,13 @@
 
 Phases are in dependency order. Each one ships on its own.
 
+This file keeps the original build plan and design decisions. For current behavior, see
+[`PLAN.md`](PLAN.md) and the user-facing [`README.md`](../README.md).
+
 ## Decisions
 
 ```
- goal      undetectable automation, agent handles everything
+  goal      self-hosted, screenshot-first computer use with human oversight
  unit      1 container = 1 persona   (scale = more containers)
  browser   pluggable: stock Chrome default, fortress opt-in (x86_64)
  perceive  screenshots + local OCR   (no CDP for pages)

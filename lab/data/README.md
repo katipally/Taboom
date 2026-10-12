@@ -34,4 +34,4 @@ For each cadence, pair human and Rust examples one-to-one by minimum absolute en
 
 ## CI and acceptance status
 
-CI runs this pipeline against the derived fixture and requires all 40 participant/seed folds to meet the documented minimum pair counts. It does not gate on AUC. No P5 human-shape threshold is specified yet, so the reported score is diagnostic evidence rather than a successful real-human acceptance result. The corpus combines task-wide movement runs with the humanizer's simple seeded move plans; the AUC can still reflect unmodeled task, device, capture, or path-shape differences.
+CI runs this pipeline against the derived fixture and requires all 40 participant/seed folds to meet the documented minimum pair counts. It also sets `--max-mean-auc 0.97`, failing when any evaluated cadence exceeds that mean AUC. This ceiling guards against regression; it is not an acceptance threshold for human equivalence. Running without the option reports diagnostic scores without an AUC gate. The corpus combines task-wide movement runs with the humanizer's simple seeded move plans; the AUC can still reflect unmodeled task, device, capture, or path-shape differences.
