@@ -1,12 +1,15 @@
 # A11y-CUA shape fixture
 
+
 ## Attribution and source
+
 
 Derived from the SU (sighted user) desktop interaction logs in the [Reduced A11y-CUA dataset](https://huggingface.co/datasets/berkeley-hci/Reduced-A11y-CUA), provided by UC Berkeley HCI. Dataset authors: Ananya Gubbi Mohanbabu, Rosiana Natalie, Brandon Kim, Anhong Guo, and Amy Pavel, [“A11y-CUA Dataset: Characterizing the Accessibility Gap in Computer Use Agents”](https://arxiv.org/abs/2602.09310). The dataset card lists the source as [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
 This fixture is an adapted, feature-only extraction of that source. It preserves the dataset credit and license link. No source event logs, screen content, task IDs, application names, raw cursor coordinates, or timestamps are included here.
 
 ## Pinned input and integrity
+
 
 - Dataset repository: `berkeley-hci/Reduced-A11y-CUA`
 - Revision: `26ee1103f74436cb7051543ba65d0c57902c0eb6`
@@ -16,6 +19,7 @@ This fixture is an adapted, feature-only extraction of that source. It preserves
 `shape_eval.py --human-root` checks this digest before extracting. This catches a changed or incomplete local snapshot rather than labeling it as the pinned revision.
 
 ## Extraction protocol
+
 
 The primary population includes every eligible movement run in each SU app-task event log; it does not filter by click, UI control, or task type.
 
@@ -28,15 +32,18 @@ The primary population includes every eligible movement run in each SU app-task 
 
 ## Rust comparison protocol
 
+
 Generate traces with `cargo run -p taboom-humanizer --example trace_export -- lab/traces.jsonl`. For each Rust `move` trace, use its own JSONL timestamps to keep the first point, then each next point at least 200, 250, or 330 ms after the last retained point, and always retain the final endpoint. Human timestamps are never assigned to or used to warp a Rust trace. Apply the same geometric normalization and distance filters to both sources.
 
 For each cadence, pair human and Rust examples one-to-one by minimum absolute endpoint-distance difference, accepting only matches within `max(40 px, 20% of the human distance)`. Train a fixed random forest on human groups outside the held-out participant and Rust seeds outside the held-out `seed % 5` fold; score the held-out participant against the held-out Rust seeds. A fold is reported only with at least 20 training pairs and 10 test pairs. The report includes fold counts and AUC values at all three Rust sampling cadences.
 
 ## CI and acceptance status
 
+
 CI runs this pipeline against the derived fixture and uses the reserved p07–p08 groups and requires all 10 participant/seed folds to meet the documented minimum pair counts. It also sets `--max-mean-auc 0.97`, failing when any evaluated cadence exceeds that mean AUC. This ceiling guards against regression; it is not an acceptance threshold for human equivalence. Running without the option reports diagnostic scores without an AUC gate. The corpus combines task-wide movement runs with the humanizer's simple seeded move plans; the AUC can still reflect unmodeled task, device, capture, or path-shape differences.
 
 ## Runtime path-library attribution
+
 
 `crates/taboom-humanizer/data/human_mouse.json` is a separate adaptation of the same source by
 Taboom, under the source's [CC BY 4.0 license](https://creativecommons.org/licenses/by/4.0/).

@@ -1,37 +1,45 @@
-# google.com Playbook
+# Google Site Playbook
 
-Applies to: `google.com`, `accounts.google.com`, `mail.google.com`
 
-## Cookie consent (EU/EEA visitors)
+Applies to `google.com`, `accounts.google.com` and `mail.google.com`.
+Page layouts and flows vary; use the current screenshot rather than fixed positions, colors or delays.
 
-Google shows a consent dialog before the search page loads.
-- Read the available choices and follow the user's privacy preference. If it is unclear, ask.
+## Consent
+
+
+If a consent dialog is visible, read its available choices and follow the user's privacy preference.
+Ask when that preference is unclear; do not assume optional tracking is authorized.
 
 ## Search
 
-1. Take a fresh screenshot and locate the search input in that image.
-2. Click it, then enter the query with the Taboom `type` tool.
-3. Press Enter with the `key` tool.
-4. Wait for the results page to settle and verify it with a fresh screenshot.
 
-## Search results page
+1. Ground the search field in a full screenshot.
+2. Focus it, type the query and press Enter.
+3. Wait if needed, then inspect the results.
+4. Select a visible result relevant to the task, or refine the query if results are unsuitable.
+   Expand related questions or use pagination only when they help the assigned task.
 
-- Organic results start below the search bar
-- Each result has a title link (blue), URL (green/gray), and snippet
-- "People also ask" sections are expandable; click the question to expand
-- Pagination is at the bottom; prefer refining the query over paging
+## Website sign-in
 
-## Google Sign-In (accounts.google.com)
 
-1. Email field appears first; type the email, press Enter
-2. Wait for the password field to appear (animated transition, ~500ms)
-3. Use the Taboom `type` tool with `<secret>name</secret>` for the password.
-4. If 2FA is required, wait for the prompt, then use a TOTP `<secret>name</secret>` immediately.
-5. After login, Google may show a "stay signed in" prompt; click "No thanks" or close
+This refers to website authentication, not browser account sign-in or sync (disabled by policy).
 
-## Gmail (mail.google.com)
+1. Use the `login_flow` prompt and the operator-provisioned vault.
+2. Close unrelated/opaque page tabs/windows before secret entry. Every open page host must match
+   the visible allowed HTTPS host; observe again after redirects between Google hosts.
 
-- Compose: locate and click the "Compose" button in a fresh screenshot.
-- The compose window's position can vary with viewport size.
-- Use the visible field order to enter recipient, subject, and body.
-- Take a screenshot before sending and confirm recipients and content.
+3. Fill predictable visible fields in one batch, verify and advance/submit separately when authorized.
+4. If the flow splits email/password or shows another challenge, stop the sequence and observe the
+   new step rather than predicting its coordinates.
+
+5. Use a configured TOTP placeholder for the observed code field or coordinate manual user control.
+6. Handle persistence prompts according to the user's preferences and verify the actual logged-in state.
+
+## Gmail
+
+
+- Locate Compose in a fresh screenshot and inspect the resulting form.
+- Batch predictable visible recipient, subject and body fields in their known order.
+- Stop to observe recipient autocomplete choices or other layout changes.
+- Verify recipients and content before a separate send action; sending requires task authorization.
+- Confirm the visible sent/error state rather than treating a click as proof of delivery.

@@ -1,8 +1,10 @@
 # Browser Interaction Patterns
 
+
 Common patterns for web browsing tasks. Each pattern shows the tool sequence.
 
 ## Open a page and read it
+
 
 ```
 session_start
@@ -15,12 +17,14 @@ session_end
 
 ## Fill visible form fields in one flow
 
+
 Observe the form once, then use `batch_actions` with the latest `frame_id` and ordered native
 steps (`tool`, plus each tool's arguments). Fill all predictable visible fields, verify the returned
 screenshot, and submit separately. Stop before an unknown menu, autocomplete choice or page change.
 This avoids a model round trip after every field. See `form_fill_flow` for the full sequence.
 
 ## Fill or correct one field
+
 
 ```
 screenshot                                    [find the field]
@@ -31,6 +35,7 @@ screenshot                                    [verify]
 ```
 
 ## Select from a dropdown
+
 
 ```
 screenshot                                    [find the dropdown]
@@ -46,6 +51,7 @@ click { x, y, describe: "Select United States" }
 
 ## Scroll to find content
 
+
 ```
 screenshot                                    [check current view]
 [content not visible]
@@ -55,6 +61,7 @@ screenshot                                    [check new content]
 ```
 
 ## Handle a popup or modal
+
 
 ```
 screenshot                                    [see the popup]
@@ -66,6 +73,7 @@ screenshot                                    [verify popup is gone]
 
 ## Download a file
 
+
 ```
 click { x, y, describe: "Click download button" }
 wait { ms: 3000 }                             [wait for download]
@@ -74,6 +82,7 @@ files_get { path: "file.pdf" }       [retrieve the file]
 ```
 
 ## Upload a file
+
 
 ```
 files_put { name: "document.pdf", data_base64: "..." }  [stage the file]
@@ -88,17 +97,19 @@ screenshot                                               [verify file selected]
 
 ## Copy text from a page
 
+
 ```
 screenshot                                    [find the text]
 click { x, y, describe: "Click start of text" }
 key_down { key: "shift" }
-click { x2, y2, describe: "Select to end of text" }
+click { x: x2, y: y2, describe: "Select to end of text" }
 key_up { key: "shift" }
 key { combo: "ctrl+c" }
 clipboard_get                                 [read the copied text]
 ```
 
 ## Handle a slow page
+
 
 ```
 open_url { url: "https://slow-site.com" }
@@ -113,6 +124,7 @@ wait { until_settled: true }
 ```
 
 ## Tab management
+
 
 ```
 [open a new tab]
@@ -133,6 +145,7 @@ key { combo: "ctrl+shift+t" }
 
 ## Work with multiple windows
 
+
 ```
 [switch focus between tiled windows]
 key { combo: "super+Left" }   or   key { combo: "super+Right" }
@@ -149,6 +162,7 @@ key { combo: "super+Return" }
 
 ## Extract table data
 
+
 ```
 screenshot                                    [see the table]
 read_text { region: { x, y, w, h } }         [OCR the table region]
@@ -158,6 +172,7 @@ zoom { region: { x, y, w, h } }              [zoom for detail]
 ```
 
 ## Wait for a specific state
+
 
 ```
 [wait for a success message]
@@ -175,6 +190,7 @@ screenshot
 
 ## Right-click context menu
 
+
 ```
 click { x, y, button: "right", describe: "Right-click the image" }
 wait { ms: 500 }
@@ -184,6 +200,7 @@ click { x, y, describe: "Click Save Image As" }
 
 ## Interact with the desktop (not browser)
 
+
 ```
 [open terminal]
 key { combo: "super+Return" }
@@ -191,7 +208,7 @@ wait { until_settled: true }
 screenshot
 
 [type a shell command]
-type { text: "ls -la /downloads" }
+type { text: "ls -la /home/taboom/Downloads" }
 key { combo: "Enter" }
 wait { ms: 1000 }
 screenshot                                    [read command output]

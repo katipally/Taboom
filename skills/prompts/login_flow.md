@@ -1,47 +1,69 @@
 # Login Flow
 
-How to log into a website using Taboom.
 
-## Before you start
+Use the operator-provisioned vault for credentials, ground the visible fields, verify the filled
+form and submit separately when the user's task authorizes login.
 
-1. Call `persona_status` to confirm the route is healthy.
-2. Call `session_start` if no session is active.
-3. Navigate to the login page with `open_url`.
-4. Take a screenshot to confirm the page loaded.
+## Prepare
 
-## Entering credentials
 
-1. Locate the username/email field in the screenshot. Click it.
-2. Use `type` with the credential value. For non-secret values (like a username the user
-   provided in chat), type it directly. For passwords, always use `<secret>name</secret>`.
-3. If the login is split into steps (email first, then password), press Enter or click
-   the "Next" button after the email, then wait for the password field to appear.
-4. Take a screenshot after the transition before typing the password.
-5. Use `type` with `<secret>password-name</secret>` for the password.
+1. Check `persona_status` and start a session if needed.
+2. Navigate to the login page, wait for the visible transition and take a full screenshot.
+3. Ensure the intended browser is focused and not fullscreen.
+4. Close unrelated/opaque page tabs and popup windows. Secret entry requires every open page
+   host to match the visible allowed HTTPS host; blank/data/file pages also refuse entry.
+
+5. The operator must have added the credential items and unlocked the daemon's vault. If entry
+   is refused, describe the reason rather than requesting a password in chat.
+
+## Fill and verify
+
+
+If username and password fields are both visible with a predictable order, use `batch_actions`
+from the latest full `frame_id`. Include described clicks (or a known Tab order) and `type` steps.
+Use `<secret>item-name</secret>` for passwords, private usernames and other vault items. A
+non-secret username supplied for the task can be typed normally.
+
+The batch returns a fresh screenshot. Verify that the intended fields are filled, without
+revealing a masked password. Keep submission clicks/Enter out of the fill batch and submit in a
+separate call only after verification.
+
+If login is split across pages, fill/verify the first step, advance with an authorized separate
+action, then wait and observe the new step. Do not predict coordinates across that transition.
 
 ## Two-factor authentication
 
-1. After submitting the password, screenshot to check for a 2FA prompt.
-2. For TOTP: use `type` with `<secret>totp-name</secret>` immediately. TOTP codes expire
-   in 30 seconds, so do not delay.
-3. For SMS/email codes: call `challenge_handoff` since the user needs to provide the code.
-4. For push notifications: call `challenge_handoff` and tell the user to approve the push.
-5. For security keys: call `challenge_handoff` since physical interaction is required.
 
-## Post-login
+After an authorized login submission, wait as needed and inspect the resulting screen.
 
-1. Take a screenshot to confirm you are logged in.
-2. Dismiss any "stay signed in" or "save password" prompts.
-3. If a CAPTCHA appears during login, follow the `challenge_flow` prompt.
-4. If login failed, read the error message and adjust (wrong credentials, account locked, etc.).
+- For an operator-provisioned TOTP item, focus the observed code field and use
+  `type {text: "<secret>totp-name</secret>", mode: "keys"}`. The vault resolves a current code;
+  do not delay unnecessarily or ask to reveal the seed.
 
-## Important
+- For SMS/email, push approval, security-key or physical-device interaction, request manual user
+  control with `challenge_handoff`/`view_url` and explain the required action.
 
-- Never type a password or secret directly. Always use `<secret>name</secret>`.
-- The vault must have the secret pre-loaded by the operator via `taboom vault add`.
-- Screenshots, zoom, OCR and visual waits remain available after secret typing. Take a fresh
-  screenshot to verify the transition and locate a 2FA field. Visible secrets can appear in live
-  responses, so use masked fields and do not reveal their contents. Saved frames and video pause
-  during secret entry and resume afterward; review them before sharing.
-- Close other tabs and windows before typing secrets (the omnibox host check requires
-  all visible tabs to be on the same domain).
+- Handoff tools return links immediately. Pause your own actions until user confirmation, then
+  observe again; they do not wait or transfer the lease.
+
+Verify the code/form before a separate submission. If another challenge appears, use the
+`challenge_flow` prompt.
+
+## After login
+
+
+Take a fresh screenshot to confirm the actual logged-in state or read the visible error.
+Handle optional persistence/save-password prompts according to the user's preferences.
+An input call alone does not establish authentication success. Avoid repeatedly retrying a
+failed credential or locked account; report the failure.
+
+## Capture behavior
+
+
+Exact vault typing skips typo planning and clipboard use. Input tracing/saved capture pause during
+entry and resume afterward, including saved frames and joined video. Screenshots, zoom, OCR and
+visual waits remain available afterward. Visible credentials or codes can appear in responses and
+recordings; use masked fields and review artifacts before sharing.
+
+The gate cannot prove that a page input rather than the omnibox has focus. Always ground and focus
+the intended field before secret entry. A daemon restart locks the website-typing vault again.

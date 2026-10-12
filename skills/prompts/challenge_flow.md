@@ -1,140 +1,69 @@
-# Challenge / CAPTCHA Handling Flow
+# Challenge / Verification Flow
 
-You have encountered a verification challenge. Follow this decision tree to handle it.
 
-## Step 1: Detect
+These tools provide local OCR cues and native input gestures. The external agent supplies visual
+reasoning; no helper guarantees that a challenge will be solved or accepted.
 
-Call `detect_challenge` (pass `region` if the challenge is in a known area of the screen).
-It returns a `challenge_type` and a `suggestion`.
+## Observe and classify
 
-## Step 2: Act by type
 
-### checkbox
-A "I'm not a robot" checkbox (reCAPTCHA v2, hCaptcha, GeeTest OneTap).
-1. Take a screenshot and locate the checkbox center.
-2. Call `challenge_click_hold` at that point. Default hold (800-2000ms) is fine.
-3. Screenshot to check: if an image grid or follow-up appeared, re-detect.
+1. Take a full screenshot and inspect the visible instruction.
+2. Optionally call `detect_challenge` with a `region`. It returns `challenge_type`,
+   `detected_cues`, `suggestion` and a short OCR text sample.
 
-### press_hold
-A button you must press and hold for 1-3 seconds (HUMAN/PerimeterX, MTCaptcha).
-1. Locate the button center.
-2. Call `challenge_click_hold` with `hold_ms_min: 1500, hold_ms_max: 3000`.
-3. Some require holding until a progress indicator fills. Use the higher range.
+3. Compare the suggestion to the screenshot before acting. OCR can misclassify; `none` only
+   means no supported text cue matched, not proof that no verification is present.
 
-### slider
-A drag-to-verify slider (GeeTest, DataDome, custom).
-1. Locate the slider handle (the draggable element, usually on the left).
-2. Locate the target (the gap or destination, usually on the right).
-3. Call `challenge_slider` with `from` (handle center) and `to` (target center).
-4. The tool overshoots then corrects automatically, mimicking human drag behavior.
+## Choose a grounded action
 
-### image_grid
-A grid of images where you select all matching ones (reCAPTCHA, hCaptcha).
-1. Screenshot and identify every tile that matches the prompt.
-2. Call `challenge_select` with all matching tile centers as `targets`.
-3. If a "Verify" button is separate, click it after selecting tiles.
-4. New tiles may load to replace selected ones. Screenshot and repeat if needed.
-5. Some hCaptcha rounds have zero matches. If nothing matches, click "Skip."
-6. If you cannot identify the correct tiles, call `challenge_handoff`.
 
-### counting
-A prompt asking "how many X are in this image?" with multiple-choice answers (hCaptcha).
-1. Use `zoom` on the image to count objects carefully.
-2. Call `challenge_select` on the correct answer option.
+The detector currently returns the following cue categories:
 
-### icon_select
-Click icons in a specific order or match shadows (GeeTest, hCaptcha variants).
-1. Read the instruction text to determine the required order.
-2. Use `zoom` on the instruction area if the text is small.
-3. Call `challenge_select` with the icon centers in the exact order shown.
+| Category | Guidance |
+|---|---|
+| `checkbox` | Locate the checkbox in the image; use a described native click/hold and verify its state. |
+| `press_hold` | Use `challenge_click_hold` with the duration required by the visible prompt; defaults are 800–2000 ms. |
+| `slider` | Use `challenge_slider` with the observed handle/target points, then inspect the result. |
+| `image_grid` | Identify matching tiles visually; `challenge_select` clicks supplied points in order. Observe replacement tiles before another sequence. |
+| `counting` | Inspect/zoom the image, count visually and select the observed answer. |
+| `icon_select` | Read the required order and pass the observed target points in that order. |
+| `text` | Zoom/read the image, focus its input and type the answer if confident. |
+| `turnstile` | Wait for the visible automatic check, then inspect whether an action is needed. |
+| `proof_of_work` | Give the browser time for its visible computation; observe completion or failure. |
+| `device_check` | Wait for the visible check; inspect any resulting challenge or error. |
+| `letter_place` | Request manual user control when precise placement cannot be grounded confidently. |
+| `drag_place` | Use ordinary drag tools only if the task/coordinates are clear; otherwise request manual control. |
+| `puzzle` | Request user help when the required spatial reasoning is beyond the agent's confidence. |
+| `audio` | Request user help; Taboom has no audio-listening tool. |
+| `qr_code` | Request user control for the physical device interaction. |
+| `none` | Continue only after inspecting the actual page state. |
 
-### letter_place
-Drag letters or characters into position (hCaptcha variant).
-1. This requires drag-and-drop precision beyond current tools.
-2. Call `challenge_handoff` with the reason.
+`challenge_click_hold` requires `x`, `y` and `describe`, with optional `frame_id` and
+`hold_ms_min`/`hold_ms_max`. `challenge_slider` requires `from`, `to` and `describe`.
+`challenge_select` requires `targets` and `describe`, accepts at most 20 points, and may take
+`frame_id`. The agent determines the correct targets; these tools perform the supplied gestures.
 
-### drag_place
-Drag an element to a specific 2D position (hCaptcha, GeeTest free-drag).
-1. Unlike sliders (1D horizontal), these are 2D free-drag challenges.
-2. Call `challenge_handoff` with the reason.
+Do not batch across replacement images, hidden challenge rounds or other unpredictable changes.
+A successful input call reports that input was performed, not that the site accepted it.
 
-### puzzle
-3D rotation, jigsaw, match-three, gobang, dice matching, tile ordering
-(FunCaptcha/Arkose, GeeTest). Over 1,250 puzzle variants exist.
-1. These require visual reasoning about 3D orientation or spatial fit.
-2. Call `challenge_handoff` with the reason.
+## Verify and recover
 
-### audio
-Listen to distorted speech and type what you hear (reCAPTCHA, hCaptcha accessibility).
-1. Audio challenges require listening capability.
-2. Call `challenge_handoff` with the reason.
 
-### text
-Type distorted characters shown in an image (legacy CAPTCHAs).
-1. Use `zoom` on the CAPTCHA image area to get a clear view.
-2. Read the characters from the zoomed image.
-3. Locate the text input field and click it.
-4. Use the `type` tool to enter the characters.
-5. Submit if there is a submit button.
+After an action, inspect a fresh screenshot for a success state, page progression or a new
+challenge. Wait only when the UI needs time. If an attempt fails, reassess instead of immediately
+repeating the same coordinates. After two unsuccessful attempts, request user help.
 
-### turnstile
-Cloudflare Turnstile (usually invisible/automatic).
-1. Wait 3-5 seconds. Turnstile often resolves without interaction.
-2. Screenshot to check. If a checkbox appeared, use `challenge_click_hold`.
-3. If it shows "checking your browser", wait longer (up to 10 seconds).
+Human-derived geometry and heuristic input timing are research models. They do not guarantee
+detection avoidance, change network TLS fingerprints or configure every browser fingerprint.
 
-### proof_of_work
-Browser-side computation (Friendly Captcha, Turnstile PoW, ALTCHA, Kasada, Prosopo).
-1. These run automatically in the browser. Wait 5-10 seconds.
-2. Screenshot to confirm the challenge resolved.
-3. If it stalls, the page may need a reload.
+## Manual user control
 
-### device_check
-Automatic device integrity check (DataDome Device Check, Akamai interstitial).
-1. A brief "checking your browser" page appears for 1-5 seconds.
-2. Wait for it to complete. Take a screenshot to verify.
-3. If it fails, a visible challenge (slider, CAPTCHA) may appear. Re-detect.
 
-### qr_code
-QR code scan challenge (reCAPTCHA 2026 cross-device verification).
-1. This requires a physical phone to scan the QR code on screen.
-2. Call `challenge_handoff` with the reason.
+Call `challenge_handoff` with a reason, or call `view_url`. `challenge_handoff` returns
+`watch_url` and `takeover_url` immediately; `view_url` uses `url` and `takeover_url`.
+These tools do not message the user, wait, release/transfer the lease or prevent simultaneous input.
 
-### behavioral (no detect_challenge output; invisible)
-Invisible challenges that score your behavior (reCAPTCHA v3, hCaptcha Enterprise).
-1. These have no visible UI. If you were flagged, a fallback challenge appears.
-2. Detect and handle the fallback challenge.
-3. Natural mouse movement, varied timing, and idle pauses reduce flagging.
-
-## Step 3: Verify
-
-After every challenge action, take a screenshot to confirm:
-- The challenge widget shows a green check or success state.
-- The page has progressed past the challenge.
-- No new challenge appeared (some sites chain challenges).
-
-If the challenge failed, try once more. After two failures, call `challenge_handoff`.
-
-## Anti-detection notes
-
-Taboom's humanizer already handles most behavioral signals:
-- Mouse curves follow Fitts' law with natural overshoot and tremor.
-- Click timing uses lognormal distributions, not fixed delays.
-- Idle drift occurs between actions.
-- Each persona has a stable, unique style seeded from its identity.
-
-Anti-bot systems collect signals at three layers:
-1. **Network**: TLS fingerprint (JA3/JA4), HTTP/2 settings, IP reputation, geo-timezone match.
-   Taboom's persona and route handle these.
-2. **Environment**: navigator.webdriver, canvas/WebGL fingerprint, fonts, plugins, device memory.
-   Taboom's persona configures these through Chrome flags and profile.
-3. **Behavioral**: mouse paths, click timing, scroll patterns, idle time, form fill speed.
-   Taboom's humanizer generates natural behavioral signals.
-
-For best results:
-- Do not rush. Add `wait` calls between actions (1-3 seconds).
-- Avoid pixel-perfect clicks. The humanizer adds natural scatter.
-- Do not repeat the exact same action immediately after a failure.
-- Complete the page task naturally after solving a challenge.
-- Vary your timing. Do not click at uniform intervals.
-- Include idle pauses where a human would read or think.
+Tell the user what is blocking progress and provide the control link. Pause your actions until
+they confirm completion, then take a full screenshot and continue from the current state.
+Manual input remains visible to live view and recording; the vault's exact-entry capture pause
+applies to MCP secret entry, not arbitrary user keystrokes.

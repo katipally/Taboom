@@ -1,633 +1,264 @@
 # Taboom
 
-Taboom is an experimental research project exploring how far AI agents can approach human
-browser interaction, from mouse movements and typing rhythm to observing pages, choosing actions,
-and recovering from mistakes.
 
-It provides a self-hosted Linux desktop in Docker for an external AI agent. The agent observes
-the browser through screenshots and local OCR, and operates it with mouse and keyboard input.
-Taboom supplies the MCP tools and environment; the connected agent supplies the model and reasoning
-loop. Nothing is injected into the page.
+**Experimental computer-use tools for external AI agents, running in a self-hosted Docker desktop.**
 
-Taboom is a real MCP server. Start it once and any MCP client can connect: Claude Code, Claude
-Desktop, Cursor, VS Code, your own agent loop, or plain `curl`. You can watch the agent live in
-your browser, and every session is recorded step by step so you can replay or share it.
+Taboom is a research project exploring how far AI agents can approach human browser interaction:
+moving a mouse, typing, reading pages, choosing a sequence of actions and recovering from mistakes.
+The connected agent supplies the model and reasoning loop. Taboom supplies the desktop, MCP tools,
+input models, prompts and playbooks.
 
-**Research status:** the runtime uses a bundled library of normalized human mouse paths for
-movements of 50–800 pixels. The library is derived reproducibly from pinned interaction logs, with
-separate participant groups reserved for evaluation. Movement timing, shorter/longer moves, typing,
-scrolling and idle behavior still use heuristic models. Playbooks and MCP prompts guide the external
-agent's decisions; they do not enforce or establish human-like reasoning. Passing regression checks does not demonstrate that behavior
-is indistinguishable from a person. See the [evaluation lab](lab/README.md) for protocols and limitations.
+The browser runs in a Linux desktop inside Docker. Agents observe screenshots and local OCR and
+operate the desktop with mouse and keyboard input. Page JavaScript, DOM queries and page-attached
+CDP automation are outside this tool interface. A private browser-level pipe is used only to check
+page-host candidates for vault secret entry.
 
-```
- ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
- │ Claude Code │  │   Cursor    │  │  VS Code    │  │ your agent  │
- └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘
-        └────────────────┴───────┬────────┴────────────────┘
-                                 │  MCP, streamable HTTP
-                                 │  POST http://localhost:3456/mcp
- ┌───────────────────────────────▼──────────────────────────────────┐
- │ docker container "taboom"                                        │
- │                                                                  │
- │   taboomd  (MCP server, session lease, route check, recordings)   │
- │            :3456, and the proxy forwarder on 127.0.0.1:1080      │
- │      │                                                           │
- │      ├── grim ─────────> screenshots                             │
- │      ├── vinput ───────> one virtual mouse + keyboard            │
- │      │                   (moves and keystrokes timed by the      │
- │      │                    humanizer: curves, rhythm, typos)      │
- │      ├── wl-copy ──────> clipboard                               │
- │      └── wf-recorder ──> session video                           │
- │                                                                  │
- │   sway (headless Wayland desktop, top bar with launchers)        │
- │      ├── Google Chrome  (the persona's profile, tz, language)    │
- │      ├── foot terminal, fuzzel app launcher                      │
- │      └── wayvnc ──> noVNC live view                      :6080   │
- └──────────────────────────────────────────────────────────────────┘
-```
+## Project status
 
-```
- you, in any browser
-   ├── http://localhost:3456/                                                  home: links + sessions
-   ├── http://localhost:6080/vnc.html?autoconnect=1&resize=scale&view_only=1   watch live
-   └── http://localhost:3456/recordings/<id>?exp=..&sig=..                     replay + video
-```
 
-The agent touches the desktop **only through the mouse and keyboard**, like a person. Nothing
-is injected into pages, and no tool launches or controls apps behind the scenes.
+The workspace version is **0.1.0**. The current implementation includes all 39 MCP tools, ordered
+action batches, human-derived mouse geometry, persona/profile setup, vault entry, recordings,
+live viewing, challenge helpers and an optional Fortress engine.
 
-> **Acceptable use:** personal and research agents acting for the person who runs them. Not for
-> account farming, mass sign-ups, or dodging rate limits at scale.
+| Area | Current state |
+|---|---|
+| Default runtime | Docker Compose with Chrome on Linux AMD64 or ARM64 |
+| Local verification | 196 Rust tests and 40 lab tests passed; 3 desktop-only Rust tests were skipped |
+| Desktop verification | All 39 MCP tools exercised on native ARM64 Chrome, including a visible three-field form batch |
+| Secret entry | Dummy HTTPS password entry verified; live perception, saved frames and joined video resumed afterward |
+| Human data | 378 normalized mouse paths drive 50–800 px movements; timing and other inputs remain heuristic |
+| Decision behavior | MCP prompts and playbooks guide the external agent; their use depends on the client |
+| Fortress | Implemented as an opt-in native AMD64 build; runtime verification awaits the hosted CI job |
+| Publishing | GitHub/GHCR workflow prepared; hosted CI and publication remain pending |
 
-**Runtime:** Docker Compose is the only supported runtime. **One container is one persona**: its
-timezone, languages, keyboard layout, screen, fonts and network route are applied to that
-container's desktop and Chrome at boot. More personas means more containers (see
-[Several personas on one host](#several-personas-on-one-host)).
-
----
+These results are from the local verification on **2026-10-12**, not a claim that every live website
+or external agent will succeed. Human paths remain distinguishable under the current shape
+diagnostic. See the [verification record](docs/PLAN.md#experimental-release-verification-2026-10-12)
+and [remaining work](docs/ROADMAP.md).
 
 ## Contents
 
-1. [Quick start (Docker)](#1-quick-start-docker)
-2. [Connect an agent](#2-connect-an-agent)
-3. [Your first session](#3-your-first-session)
-4. [Watch it live](#4-watch-it-live)
-5. [Recordings](#5-recordings)
-6. [Tools reference](#6-tools-reference)
-7. [Configuration](#7-configuration)
-8. [Auth and remote access](#8-auth-and-remote-access)
-9. [Day-to-day commands](#9-day-to-day-commands)
-10. [Troubleshooting](#10-troubleshooting)
-11. [Developing](#11-developing)
-12. [Repo map](#12-repo-map)
 
----
+- [How it works](#how-it-works)
+- [Quick start](#quick-start)
+- [Connect an agent](#connect-an-agent)
+- [Agent workflow](#agent-workflow)
+- [Tool reference](#tool-reference)
+- [Human-data research](#human-data-research)
+- [Vault and secret entry](#vault-and-secret-entry)
+- [Live view and recordings](#live-view-and-recordings)
+- [Configuration and personas](#configuration-and-personas)
+- [Network routes and remote access](#network-routes-and-remote-access)
+- [Operations and troubleshooting](#operations-and-troubleshooting)
+- [Development and publishing](#development-and-publishing)
+- [Documentation and source map](#documentation-and-source-map)
 
-## 1. Quick start (Docker)
+## How it works
 
-You need Docker with Compose v2. Clone this repository from GitHub or download and extract its ZIP.
-To build the checked-out source, run this from the repository root:
+
+One container runs one persona and one shared desktop. A session leases that desktop to one agent
+identity at a time. Additional personas run in separate Compose projects.
+
+```mermaid
+flowchart LR
+    Agent["External AI agent<br/>model and reasoning loop"]
+    Human["User"]
+    subgraph Docker["Taboom Docker desktop · one persona"]
+        MCP["taboomd<br/>MCP, lease and route checks"]
+        Input["Humanizer + vinput<br/>mouse and keyboard"]
+        Desktop["Sway desktop<br/>Chrome or optional Fortress"]
+        Vision["grim + Tesseract<br/>screenshots and local OCR"]
+        Live["wayvnc + noVNC<br/>live view"]
+        Store[("Persistent data<br/>profile, vault, recordings and audit")]
+        MCP --> Input --> Desktop
+        Desktop --> Vision --> MCP
+        Desktop --> Live
+        MCP --> Store
+    end
+    Agent -->|"MCP over HTTP :3456"| MCP
+    MCP -->|"images, text and results"| Agent
+    Human -->|"watch or control :6080"| Live
+    Human -->|"dashboard and signed replays :3456"| MCP
+```
+
+The agent interacts with applications through desktop input. File transfer and clipboard tools
+provide explicit supporting capabilities. Local operator commands administer the vault and persona.
+
+## Quick start
+
+
+Install Docker with Compose v2. From a checkout of this repository:
 
 ```bash
-docker compose up -d --build
+git clone https://github.com/katipally/Taboom.git
+cd Taboom
+docker compose up -d --build --wait --wait-timeout 180
 ```
 
-The first source build compiles the Rust code, so give it a few minutes. Later starts take seconds.
+The first build compiles Rust and installs the desktop dependencies. Boot validates the persona
+and network route before opening the browser. A missing persona file is created with US defaults,
+a generated screen configuration and a stable random seed.
 
-After a GitHub release is available, Compose can use its prebuilt GHCR image instead:
+| URL | Purpose |
+|---|---|
+| [http://localhost:3456/](http://localhost:3456/) | Dashboard, agent setup, searchable sessions and replay links |
+| `http://localhost:3456/mcp` | MCP Streamable HTTP endpoint |
+| [http://localhost:3456/healthz](http://localhost:3456/healthz) | Desktop health: Sway, vinput and browser |
+| [Watch live](http://localhost:6080/vnc.html?autoconnect=1&resize=scale&view_only=1) | View the desktop without sending input |
+| [Control desktop](http://localhost:6080/vnc.html?autoconnect=1&resize=scale) | Send mouse and keyboard input yourself |
+
+Both host ports bind to `127.0.0.1` by default.
 
 ```bash
-docker compose pull
-docker compose up -d
+docker compose ps
+docker compose logs -f taboom
 ```
 
-Set `TABOOM_VERSION` in `.env` to pin a release instead of using `latest`. Both paths run the
-same self-hosted container; neither connects to a Taboom-hosted service.
+After a release is published, use its prebuilt image with `docker compose pull` followed by
+`docker compose up -d --no-build --wait`. Set `TABOOM_VERSION` in `.env` to pin the image tag.
+The publishing destination is `ghcr.io/katipally/taboom`.
 
-What happens on `up`:
+## Connect an agent
 
-```
- docker compose up
-   │
-   ├─ 1. boot-check          reads personas/$TABOOM_PERSONA.toml (first boot writes a
-   │                         default one), writes tz/lang/keyboard/screen/fonts settings,
-   │                         verifies the route. Any failure: exit 1, Chrome never starts
-   ├─ 2. sway starts         headless desktop at the persona's screen size and scale
-   ├─ 3. vinput starts       one persistent virtual mouse + keyboard, persona's layout
-   ├─ 4. taboomd starts      MCP on :3456, proxy forwarder, route re-check every 5 min
-   ├─ 5. Chrome opens        on the persona's profile with its language and proxy flags
-   ├─ 6. live view starts    wayvnc + noVNC on :6080
-   └─ 7. links printed       "Taboom is up: persona default" banner in the logs
-                                    │
-                                    ▼
-                          healthcheck goes "healthy"
-                          (/healthz: vinput, sway and Chrome all answer)
-```
 
-Check it:
+Use `http://localhost:3456/mcp`, or the host/port configured for your deployment. Taboom provides
+Streamable HTTP POST responses as JSON; GET returns 405 because no server SSE stream is provided.
+
+### Codex
+
 
 ```bash
-docker compose ps                  # STATUS should say (healthy)
-docker compose logs taboom | grep -A6 "Taboom is up"
+codex mcp add taboom --url http://localhost:3456/mcp
+codex mcp list
 ```
 
-The logs print clickable links:
-
-```
-  ┌─ Taboom is up: persona default ─────────────────────────────────────────
-  │  3456  Home         http://localhost:3456/
-  │  6080  Watch live   http://localhost:6080/vnc.html?autoconnect=1&resize=scale&view_only=1
-  │        MCP          http://localhost:3456/mcp
-  │        Claude Code  claude mcp add --transport http --scope user taboom http://localhost:3456/mcp
-  │        Browser log  /home/taboom/.taboom/logs/chrome.log
-  └─────────────────────────────────────────────────────────────────────────
-```
-
-Or open **http://localhost:3456/** for the dashboard. It has live desktop controls, MCP setup
-details, and a searchable, paginated session library with replay and video actions. When MCP tokens
-are configured, enter a bearer token to unlock the session library in that browser tab.
-
-In Docker Desktop, the two port links next to the container name do the same:
-
-```
- 3456:3456  ->  workspace dashboard, sessions, MCP endpoint, and recordings
- 6080:6080  ->  live view, watch only
-```
-
-Chrome's own output goes to `~/.taboom/logs/chrome.log` inside the container, so the
-container logs stay readable.
-
-### Ports and URLs
-
-Two ports are published, both on `127.0.0.1` by default. Everything else stays inside the
-container.
-
-| Port | Path | What it is |
-|---|---|---|
-| **3456** | `/` | Workspace dashboard: live controls, agent setup, searchable sessions and recordings |
-| 3456 | `/api/sessions` | Paginated session metadata; bearer-authenticated when MCP tokens are configured |
-| 3456 | `/mcp` | MCP Streamable HTTP (`POST`; `GET` returns 405 because server-initiated SSE is not used) |
-| 3456 | `/recordings/<id>?exp=..&sig=..` | Signed replay page; `/video/video.mp4` and `/frames/<n>.png` under it |
-| 3456 | `/healthz` | 200 when vinput, sway and Chrome all answer; 503 with the failing part otherwise. The Compose healthcheck uses it |
-| **6080** | `/` | Redirects to the live view |
-| 6080 | `/vnc.html?autoconnect=1&resize=scale&view_only=1` | Live view, watch only |
-| 6080 | `/vnc.html?autoconnect=1&resize=scale` | Live view with mouse and keyboard (take over) |
-
-Inside the container only, never published: wayvnc on `127.0.0.1:5900` (noVNC's backend) and
-the input daemon's socket at `/run/user/1000/taboom-input.sock`.
-
-To change the ports, set `TABOOM_MCP_PORT` and/or `TABOOM_VIEW_PORT` (see
-[section 7](#7-configuration)). The banner, home page, `view_url`, and recording share links
-follow those settings. Re-add your MCP client with the new URL.
-
-Smoke-test the MCP endpoint with curl:
-
-```bash
-curl -s http://localhost:3456/mcp \
-  -H 'Content-Type: application/json' \
-  -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
-```
-
-You should get back `"serverInfo":{"name":"taboom",...}`.
-
----
-
-## 2. Connect an agent
-
-The server speaks MCP over **streamable HTTP** at one URL:
-
-```
- http://localhost:3456/mcp
-```
-
-Any client that supports MCP Streamable HTTP can use it directly. The server exposes 39 tools and
-read-only resources for its agent playbook and site notes.
+For bearer authentication, add `--bearer-token-env-var TABOOM_AGENT_TOKEN` to the add command.
+The Codex process must receive that environment variable with the token value.
+See the [official OpenAI MCP documentation](https://developers.openai.com/codex/mcp).
 
 ### Claude Code
 
+
 ```bash
 claude mcp add --transport http --scope user taboom http://localhost:3456/mcp
-claude mcp list          # taboom should show as connected
+claude mcp list
 ```
 
-`--scope user` makes it available in every project. Use `--scope project` to write it into this
-repo's `.mcp.json` so teammates get it too.
+For bearer authentication, add `--header "Authorization: Bearer <your-token>"`.
+Use `--scope project` for a project configuration rather than a user configuration.
+See the [Claude Code MCP documentation](https://code.claude.com/docs/en/mcp).
 
-With a token (see [section 8](#8-auth-and-remote-access)):
+### Cursor
 
-```bash
-claude mcp add --transport http --scope user taboom http://localhost:3456/mcp \
-  --header "Authorization: Bearer <your-token>"
-```
 
-### Cursor and clients using `mcpServers`
-
-For Cursor, put this in `.cursor/mcp.json`:
+Put this in `.cursor/mcp.json`, following [Cursor's configuration](https://cursor.com/docs/mcp):
 
 ```json
 {
   "mcpServers": {
     "taboom": {
-      "type": "http",
-      "url": "http://localhost:3456/mcp",
-      "headers": { "Authorization": "Bearer <your-token>" }
+      "url": "http://localhost:3456/mcp"
     }
   }
 }
 ```
 
-Drop the `headers` line if you did not set tokens.
+For bearer authentication, add `"headers": {"Authorization": "Bearer <your-token>"}` to the
+server entry. Keep token-bearing local configuration out of version control.
 
 ### VS Code
 
-VS Code's `.vscode/mcp.json` uses a `servers` block ([configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration)):
+
+Put this in `.vscode/mcp.json`. VS Code uses a `servers` block
+([configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration)):
 
 ```json
 {
   "servers": {
     "taboom": {
       "type": "http",
-      "url": "http://localhost:3456/mcp",
-      "headers": { "Authorization": "Bearer <your-token>" }
+      "url": "http://localhost:3456/mcp"
     }
   }
 }
 ```
 
-Drop the `headers` line if you did not set tokens.
+For bearer authentication, add the same `headers` entry described above.
 
 ### Claude Desktop
 
-For local desktop configuration, use a stdio-to-HTTP bridge such as
-[`mcp-remote`](https://github.com/punkpeye/mcp-remote). It requires Node.js and downloads through `npx`:
+
+For a local stdio server configuration, a bridge such as
+[`mcp-remote`](https://github.com/punkpeye/mcp-remote) connects to Taboom's HTTP endpoint.
+This example uses Node.js and downloads the bridge through `npx`:
 
 ```json
 {
   "mcpServers": {
     "taboom": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "http://localhost:3456/mcp", "--allow-http", "--transport", "http-only"]
+      "args": [
+        "-y", "mcp-remote", "http://localhost:3456/mcp",
+        "--allow-http", "--transport", "http-only"
+      ]
     }
   }
 }
 ```
 
-If tokens are enabled, add `"--header-file", "/absolute/path/to/taboom-headers.txt"` to `args`.
-That local file should contain `Authorization: Bearer <your-token>`; keep it private.
+For tokens, append `"--header-file", "/absolute/path/to/taboom-headers.txt"` to `args`.
+The private header file should contain `Authorization: Bearer <your-token>`.
 
-### Your own code
+### Your own MCP client
 
-It is plain JSON-RPC 2.0 over POST. The flow any client follows:
 
-```
- client                                   taboom
-   │ POST initialize ───────────────────────>│
-   │<──────── protocolVersion, tools/resources │
-   │ POST notifications/initialized ────────>│  202, no body
-   │ POST resources/list ──────────────────>│
-   │<──────────── Taboom playbooks ─────────│
-   │ POST resources/read ──────────────────>│
-   │<──────────── playbook text ────────────│
-   │ POST tools/list ───────────────────────>│
-   │<──────────────────────── 39 tools        │
-   │ POST tools/call session_start ─────────>│
-   │ POST tools/call screenshot ────────────>│
-   │<─────────────── image block (PNG)        │
-   │ POST tools/call click / type / ... ────>│
-```
-
-Any official MCP SDK (Python, TypeScript, etc.) works with its streamable HTTP client.
-Send `Accept: application/json, text/event-stream` on POST requests and use the negotiated
-`MCP-Protocol-Version` header after initialization. Taboom responds with JSON and returns 405 to GET
-requests because it does not offer an SSE stream.
-
----
-
-## 3. Your first session
-
-Every agent must **start a session** before it can touch the screen. The container is one
-persona (named by `TABOOM_PERSONA`, `default` unless you set it), so there is nothing to pick.
-
-```
- session_start ──> screenshot / click / type ... ──> session_end
-       │
-       ├─ one holder at a time; a second agent gets "held by '<name>'"
-       └─ refused while the route check is failing
-```
-
-`persona_status` works with or without a session: which persona this is, its declared settings
-next to what the runtime actually applied, and the route's health.
-
-Try it in Claude Code after connecting:
-
-```
-Use taboom. Start a session, open https://example.com,
-take a screenshot, and tell me what the page says.
-```
-
-The agent will call, in order:
-
-| Step | Tool | Arguments |
-|---|---|---|
-| 1 | `session_start` | `{}` |
-| 2 | `open_url` | `{"url": "https://example.com"}` |
-| 3 | `wait` | `{"until_settled": true}` |
-| 4 | `screenshot` | `{}` |
-
-Screenshots come back as real MCP image blocks, so the model sees the pixels directly.
-
-**How coordinates work.** Screenshots are scaled so the longest edge is 1280 px (1920x1080 comes
-back as 1280x720). Model APIs shrink bigger images anyway, which would quietly throw clicks off.
-The agent always clicks in the pixel space of its **latest full screenshot**, and Taboom maps
-that to the real screen.
-
-```
- real screen 1920x1080  <──── x / 0.667 ────  screenshot 1280x720  <── agent clicks (640, 360)
-                                                                         lands at (960, 540)
-```
-
-- Clicks outside the screenshot are refused with the valid size.
-- A `click` with an old `frame_id`, or any action after the screen changed size, is refused with
-  "take a new screenshot".
-- `zoom` (or `screenshot` with `region`) is for reading small text. It returns a full-resolution
-  crop and does not change the coordinate space.
-
-### Vault secret typing
-
-Store credentials with the local `taboom vault add` command; it reads each value at a hidden
-terminal prompt. In an MCP `type` call, refer to a saved item as `<secret>NAME</secret>` and never
-include its value. Passwords and notes are typed as exact, layout-aware key presses; TOTP seeds
-produce the current code. Secret calls never use paste or the clipboard, and the key sequence skips
-the normal typo planner.
-
-Taboom requires an unlocked vault, a healthy route, an allowed current domain, and a focused Chrome
-window that is not fullscreen. HTTP pages are refused. An allow-list matches the exact hostname and
-its subdomains; an empty list denies use. Taboom reads page targets through Chrome's private
-`--remote-debugging-pipe` and the `Target.getTargets` method. The daemon's local bridge sends only
-normalized HTTP(S) host candidates and their schemes; page IDs, titles, paths, and query strings
-are not forwarded to the secret handler. Taboom does not attach to a page, enable `Runtime`, or
-expose a debugging port. Since the target list does not identify the active tab, private OCR of the
-visible Chrome omnibox selects the matching candidate host, and every open HTTP(S) tab and window
-must be on that host (other sites refuse with `other_sites_open`; an about:blank, data:, blob: or
-file: page anywhere refuses with `opaque_page_open`, since its opener can draw a fake address bar). A hidden scheme is accepted only when
-the host has an HTTPS candidate and no same-host HTTP candidate; an explicit HTTP URL refuses
-typing. Missing geometry, OCR errors, low confidence, or a host mismatch also refuse. The OCR crop and recognized
-text stay in memory and are not returned, cached, or recorded. This check still cannot verify that
-the focused control is a web form field rather than Chrome's address bar, or prevent a navigation
-immediately after the final checks. Immediately before a secret call, take a screenshot and click
-the intended page field; keep that page in place while typing. Taboom repeats the target and OCR
-checks before stopping video and after finalizing it, then rechecks focus and route immediately
-before input. Use `submit: true` only when the intended field and form submission are confirmed.
-
-The step log stores the original placeholder, never the expanded value. Before typing, Taboom
-finalizes the active video clip, waits for in-flight capture, and invalidates older pending frames.
-It pauses capture and input tracing during the exact secret keystrokes, then resumes screenshots,
-OCR, saved frames and video. Resumed video clips are joined into the same session video without
-overwriting footage from before secret entry. The video omits the secret-entry interval.
-
-**Visible-secret exposure:** after typing, live images, OCR, saved frames and video can contain
-credentials that remain visible on screen. Shared recordings can expose them. Use masked password
-fields and review artifacts before sharing. The vault value is excluded from tool argument logs
-and secret-use audit entries; that does not redact screen content afterward. Older persistent
-capture-blocking markers are removed automatically on upgrade, without deleting the vault or
-browser profile. The human live view remains available throughout.
-
-`~/.taboom/audit/taboomd.jsonl` is append-only and outlives recording cleanup. Besides vault
-events it logs every MCP tool call: tool name, client and whether it succeeded, never the
-arguments.
-
-Taboom includes its playbook as MCP resources. On connection, the server also sends short
-instructions that point to `taboom://skills/SKILL.md`. Clients can list the site notes with
-`resources/list` and read them with `resources/read`. MCP clients decide how to use resources, so
-some may require you to ask the agent to read the playbook. The files remain available in
-[`skills/`](skills/) for client-specific installations.
-
----
-
-## 4. Watch it live
-
-Click **Watch live** on http://localhost:3456/, or open this in any browser while the agent works:
-
-```
-http://localhost:6080/vnc.html?autoconnect=1&resize=scale&view_only=1
-```
-
-```
- agent ──MCP──> taboomd ──> sway desktop ──> wayvnc (inside, loopback only)
-                                                │
-                                        websockify + noVNC :6080
-                                                │
-                                        your browser tab  (watch)
-```
-
-- `view_only=1` means you watch without touching. Open the control URL to use the mouse and
-  keyboard yourself, for example to solve a CAPTCHA or type a 2FA code, then return to the
-  watch-only link when you are done.
-- `resize=scale` fits the desktop to your window at any size, phone included.
-- The agent can fetch both links with the `view_url` tool (`url` to watch, `takeover_url` for
-  direct control). If a task needs your input, open the control link yourself; Taboom no longer
-  provides an agent-managed handoff workflow.
-- It has no password. Keep it on `127.0.0.1` (the default) or behind a private network. See
-  [section 8](#8-auth-and-remote-access).
-
----
-
-## 5. Recordings
-
-Every session records a **step log**, screen video and frames. Visual recording pauses during vault
-secret keystrokes and resumes afterward, potentially including visible credentials. A session
-starts at `session_start` and ends at `session_end`.
-
-```
- session_start ───┬─ screenshot ─┬─ click ─┬─ type ─┬─ ... ─┬─ session_end
-                  │              │         │        │       │
- events.jsonl     1              2         3        4       n     every call: time, tool, args,
-                                                                  ok/error, duration
- frames/          -          00002.png  00003.png 00004.png   the exact image the agent saw, or
-                                                              the screen 0.4 s after an action
-```
-
-On disk (inside the `taboom-data` volume):
-
-```
- ~/.taboom/recordings/<id>/
-     meta.json        persona, client, start, end
-     events.jsonl     one line per tool call
-     frames/          one PNG per visual step
-     video.mp4        the whole session (H.264, max 1280 wide). While the session
-                      runs it is video.mkv; it becomes .mp4 a few seconds after release
-```
-
-### Ask the agent for them
-
-The agent has three tools. Just ask in plain words, for example "show me what you did in the last
-session" or "give me a link to replay that run".
-
-| Tool | What it does |
-|---|---|
-| `recording_list` | Sessions, newest first: id, persona, start/end, step count, video status. |
-| `recording_get` | Steps from a session (default: the current one). `step: 12` returns that step plus its frame image. `frames: true` adds up to 10 images per page. Page through long sessions with `from_step` and `limit`. |
-| `recording_share` | Signed links (default expiry 7 days): `url` for the replay page, `video_url` for the video file. Anyone with a link can open it. Tampered or expired links get `403`. |
-
-The replay page plays the video at the top, then lists every step with its time, tool,
-arguments, errors in red, and the frame. Images load lazily and the video streams with seeking,
-so long sessions stay fast.
-
-### Grab them by hand
+Initialize, send `notifications/initialized`, discover tools/resources/prompts, then call the tools.
+Send `Accept: application/json, text/event-stream` and the negotiated `MCP-Protocol-Version` on
+subsequent POST requests. Supported protocol versions are `2025-11-25`, `2025-06-18`,
+`2025-03-26` and `2024-11-05`.
 
 ```bash
-docker compose cp taboom:/home/taboom/.taboom/recordings ./recordings
+curl -s http://localhost:3456/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}'
 ```
 
-Frames take about 150-250 KB per visual step and video roughly 1-2 MB per busy minute (idle
-screens add almost nothing). Set `TABOOM_RECORDINGS_MAX_GB` to cap the folder: when a session
-starts, the oldest sessions are deleted until the rest fit, never the one still running. Unset,
-nothing is deleted automatically.
+Add the bearer header when tokens are configured. The reply identifies the server as `taboom`.
 
-File contents from `files_put` are not recorded (only their size). `<secret>` placeholders are
-stored as the placeholder, never the expanded value in tool arguments. Capture pauses during secret
-keystrokes, then resumes. Later frames and video can include visible credentials; review before sharing.
+## Agent workflow
 
----
 
-## 6. Tools reference
+Ask the agent to read `taboom://skills/SKILL.md`, start a session and use screenshots to ground
+actions. The server exposes three playbook resources and ten prompts through `resources/list`
+and `prompts/list`. Clients control whether and when this guidance enters the model's context.
 
-```
- SESSION              SEE                 MOUSE                  KEYBOARD
- ────────────────     ───────────────     ──────────────────     ─────────────────
- session_start        screenshot          click                  type
- session_end          zoom                move                   key
- persona_status       cursor_position     drag                   key_down
-                                          scroll                 key_up
-                                          mouse_down             hold_key
-                                          mouse_up               open_url **
-
- RECORDINGS           OTHER
- ────────────────     ──────────────────────────────────────────────────────────
- recording_list       wait, files_put, files_get, files_list, clipboard_get,
- recording_get        clipboard_set, view_url, computer *
- recording_share
-
- Additional visual tools: find_text, read_text
- Persona files: persona_generate, persona_list
- Challenges: detect_challenge, challenge_click_hold, challenge_slider,
-             challenge_select, challenge_handoff
-
- Batch flow: batch_actions
-
- 39 tools in total.
+```mermaid
+flowchart TD
+    Start["session_start"] --> Observe["Full screenshot<br/>inspect the visible page"]
+    Observe --> Known{"Predictable visible sequence?"}
+    Known -->|"yes"| Batch["batch_actions<br/>ordered input without model round trips"]
+    Known -->|"no"| Step["One action<br/>observe the new state"]
+    Batch --> Verify["Inspect final screenshot<br/>and completed-step results"]
+    Step --> Observe
+    Verify --> Submit{"Verified and submission authorized?"}
+    Submit -->|"yes"| Send["Separate submit action<br/>wait and verify outcome"]
+    Submit -->|"no"| Observe
+    Send --> More{"More work?"}
+    More -->|"yes"| Observe
+    More -->|"no"| End["session_end"]
 ```
 
-`**` `open_url` is keyboard only: super+b (focuses the browser, or reopens it if closed), ctrl+t,
-types the address, Enter.
+### Fill visible fields in one flow
 
-`*` `computer` accepts Anthropic's computer-use tool schema (`screenshot`, the click variants,
-`mouse_move`, `left_click_drag`, `left_mouse_down`, `left_mouse_up`, `type`, `key`,
-`hold_key`, `scroll` with `scroll_direction` and `scroll_amount`, `wait` with `duration`,
-`zoom` with `region`, `cursor_position`) and maps it onto the native tools, so existing
-computer-use agent loops work unchanged.
 
-Key arguments:
-
-| Tool | Required args | Notes |
-|---|---|---|
-| `session_start` | none | Lease the desktop before using it. Starts the recording and reads the persona's keyboard layout from vinput once. Refused while another agent holds it or the route check fails. |
-| `session_end` | none | Releases held keys and buttons, stops the recording, frees the desktop. |
-| `persona_status` | none | Persona name, declared settings, applied values (TZ, LANG, keyboard, screen mode, `hardwareConcurrency`, `deviceMemory`), any mismatches, route health (exit IP, country, ASN, last check). No session needed. |
-| `screenshot` | none | Longest edge 1280 by default; `max_edge` 200-4096. Returns `frame_id` and sizes. |
-| `zoom` | `region` | `{x, y, w, h}` in screenshot coordinates. Returns a full-resolution crop. |
-| `find_text` | `text` | Local OCR; returns matching lines with boxes and confidence in the latest full screenshot's pixel space. Optional `region` uses those coordinates. |
-| `read_text` | none | Local OCR; returns visible lines with boxes and confidence. Optional `region` uses latest screenshot coordinates. |
-| `click` | `x`, `y`, `describe` | `describe` says what you mean to do, e.g. "Submit the form". Optional `button`, `count` (1-3), `frame_id`. |
-| `drag` | `from`, `to`, `describe` | Left button held and moved over about 0.4 s. |
-| `scroll` | `direction`, `amount` | `up`, `down`, `left`, `right`; `amount` is wheel notches. Optional `x`, `y` (default: center). |
-| `type` | `text` | `mode`: `keys` (real key presses on the persona's layout, with Shift/AltGr, human rhythm and the odd corrected typo), `paste` (clipboard + ctrl+v), or `auto` (keys, but pastes text over 400 chars or with characters the layout lacks). `<secret>NAME</secret>` uses exact key presses without paste/typo planning and requires an unlocked vault, an allow-listed hostname, a healthy route, focused non-fullscreen Chrome, and a matching, confident OCR read of the visible omnibox against Chrome's page-host candidates, with no tabs open on other sites. HTTP pages and hosts with a hidden scheme plus same-host HTTP and HTTPS candidates are refused. `submit: true` presses Enter after typing; use it only when the intended field and submission are confirmed. |
-| `key` | `combo` | `ctrl+c`, `Enter`, `F5`, or a sequence: `ctrl+a Delete`. Also the desktop shortcuts below. |
-| `mouse_down` / `mouse_up` | none | Hold a button (optionally after moving to `x`, `y`) until released. For drawing, custom drags, range selects. |
-| `key_down` / `key_up` | `key` | Hold a key, like shift while clicking. |
-| `hold_key` | `key` | Hold for `duration_ms` (default 1000, max 10000). |
-| `wait` | none | `ms` sleeps. `until_settled: true` waits until the screen stops changing, or `until_text` waits for a case-insensitive visible text match; `ms` is the cap (default 3000). |
-| `open_url` | `url` | Opens the URL in a new browser tab. |
-| `files_put` / `files_get` / `files_list` | `name` + `data_base64` / `path` / none | Files in the browser's Downloads folder. `files_get` is capped at 20 MB and never leaves that folder. |
-| `clipboard_get` / `clipboard_set` | none / `text` | The desktop clipboard. |
-| `view_url` | none | `url` (watch) and `takeover_url` (direct control) for the live view. Give the control link to the user when they need to interact with the desktop. |
-
-Every failure comes back as an MCP error with the reason, never as fake success. On
-`session_end` every held key and button is let go. While the route check is failing, every
-action except `session_end`, `persona_status` and the recording tools is refused.
-
-### How input stays human
-
-Every mouse move and keystroke is planned by `taboom-humanizer` and played through one
-persistent virtual mouse and keyboard (`vinput`), in real time:
-
-```
- aimed move   for 50–800 px moves, draws a comparable-length normalized human path,
-              rotates and scales it to the target, and applies a heuristic velocity profile.
-              Other distances use curved heuristic strokes with corrective movements.
-              Duration follows Fitts' law; small tremor fades in and out. When clicking,
-              aiming at a control rather than a pixel, it lands within 3 px of the point
-              (sd ~1 px), so repeated clicks on one spot never hit the identical pixel
- between      the hand never freezes: it rests and drifts slowly near where the last action
- actions      happened (radius ~40 px); after typing it mostly rests, like a hand on keys
- typing       keys come from the persona's XKB layout (vinput answers `lookup` once per
-              session: which key and whether Shift or AltGr), so "y" on a German layout
-              is the key a German types; tempo varies per call and drifts across the
-              text; longer gaps at spaces and after punctuation; digits and symbols
-              slower; Shift/AltGr pressed a beat early; fast pairs overlap (rollover);
-              occasional thinking pauses; typos on the physical row neighbor, sometimes
-              noticed a key or two late, then backspaced
- per persona  a stable style (speed, typing habits) from the persona's `humanizer.seed`;
-              fresh randomness every session varies path selection and timing
-```
-
-The idle hand pauses while an action runs or a mouse button is held, and only runs during a
-session. `wait` with `until_settled` ignores the cursor, so the drift never counts as
-the page still changing.
-
-To study the real event stream, start with `VINPUT_TRACE` set (see
-[section 7](#7-configuration)); it appends JSONL records with `timestamp_us`, `event`, `a`, and
-`b` fields for pointer positions, buttons, keys, and wheel notches. The eval lab also reads older
-`ms kind a b` logs. Live records have no action boundaries, so their pointer-position stream
-cannot distinguish movement from idle or click drift; the Rust trace exporter provides tagged
-per-action samples for regression tests.
-
-### Desktop controls
-
-Everything a person can do on this desktop, the agent does the same way:
-
-```
- top bar (click)     [ Browser ] [ Terminal ] [ Apps ]            clock
- ──────────────────────────────────────────────────────────────────────────
- super+b             go to the browser; reopens it if it was closed
- super+Return        terminal (a shell inside the container)
- super+d             app launcher
- super+shift+q       close the focused window
- super+f             fullscreen            super+shift+space  float
- super+arrows        move focus            super+shift+arrows move window
- super+1..4          switch workspace      super+shift+1..4   send window there
- super+w / super+e   tabbed / split layout
-```
-
-**Closed the browser by accident?** Click **Browser** in the top bar (in the live view with
-take over, or have the agent click it), or press super+b. `open_url` does this on its own.
-
-Run `tools/list` for the full JSON schemas.
-
----
-
-### Continuous action sequences
-
-After observing a visible form, use `batch_actions` to fill its known fields in one MCP call. Each
-step uses its native tool arguments plus a `tool` field:
+Take a full screenshot, plan known fields in visual or known Tab order, then call:
 
 ```json
 {
-  "frame_id": "<latest screenshot frame_id>",
+  "frame_id": "<latest full screenshot frame_id>",
   "actions": [
-    {"tool": "click", "x": 420, "y": 280, "describe": "Focus the name field"},
+    {"tool": "click", "x": 420, "y": 280, "describe": "Focus name field"},
     {"tool": "type", "text": "Alex", "mode": "keys"},
     {"tool": "key", "combo": "Tab"},
     {"tool": "type", "text": "alex@example.com", "mode": "keys"}
@@ -635,222 +266,372 @@ step uses its native tool arguments plus a `tool` field:
 }
 ```
 
-The batch keeps the desktop exclusively through 1–64 ordered steps, preserves normal humanizer
-input timing and vault checks, stops on the first error, and returns completed-step details and a
-fresh screenshot. Supported steps are `click`, `move`, `type`, `key`, `scroll`, and `wait`. Fill and
-verify before submitting in a separate call; `type` with `submit: true` is refused within a batch.
-The server cannot infer whether an arbitrary click or key submits a form, so the playbook requires
-the agent to keep submission out of the sequence. Break batches when a menu, autocomplete result,
-new page, or other unknown state needs observation. Never replay completed steps after an error.
+`batch_actions` accepts 1–64 `click`, `move`, `type`, `key`, `scroll` or `wait` steps. It keeps
+the tool transaction lock throughout the sequence, retains normal input/vault checks, stops at
+the first error and returns completed-step details plus a final screenshot. On success it also
+attempts to settle the screen before the final capture.
 
-## 7. Configuration
+Verify the completed form before a separate submission. `type` with `submit: true` is rejected
+inside a batch. An arbitrary click or Enter key can still submit a form; the agent must keep those
+out of a fill batch. Stop before unfamiliar menus, autocomplete choices, navigation or other states
+that require another observation. After a failure, inspect `completed_actions` and `failed_step`;
+continue from the current state instead of replaying the whole batch.
 
-Set these in your shell or in a `.env` file next to `docker-compose.yml`. Compose reads `.env`
-on its own.
+### Coordinates and verification
 
-| Variable | Default | What it does |
+
+- The default full screenshot has a longest edge of at most 1280 px. Click in that returned image's
+  pixel space; Taboom maps it to the physical screen.
+
+- Full screenshots establish a new `frame_id`. A crop or `zoom` is for inspection and keeps the
+  previous full screenshot's coordinate space. Crops use native resolution subject to their edge cap.
+
+- Frame checks detect a newer full screenshot or changed screen geometry. They do not prove the
+  page has stayed unchanged, so observe again after uncertain transitions.
+
+- `wait` can return `found: false` or `settled: false` at its cap. Inspect those fields and the screen;
+  a wait response does not prove navigation or submission succeeded.
+
+- End the session when done, including after errors. Held keys/buttons are released.
+
+## Tool reference
+
+
+**39 tools.** `tools/list` is the authoritative source for schemas and defaults.
+
+| Tool | Main arguments | Behavior |
 |---|---|---|
-| `TABOOM_MCP_PORT` | `3456` | Host port for MCP, the home page and recordings. The container always listens on 3456 inside. |
-| `TABOOM_VIEW_PORT` | `6080` | Host port for the live view. The container always listens on 6080 inside. |
-| `TABOOM_MCP_PUBLISH` | `127.0.0.1` | Host interface for MCP. Network publication requires `TABOOM_MCP_TOKENS`. |
-| `TABOOM_VIEW_PUBLISH` | `127.0.0.1` | Host interface for the unauthenticated live view. Keep it on loopback or a private network. |
-| `TABOOM_PUBLISH` | unset | Deprecated fallback for both publish addresses. Prefer the separate variables. |
-| `TABOOM_VERSION` | `latest` | GHCR image tag used by Compose. Use `docker compose up -d --build` to build the checked-out source. |
-| `TABOOM_PUBLIC_URL` | `http://localhost:<MCP port>` | Base of recording share links. Set it to the address other people use to reach this box. |
-| `TABOOM_MCP_TOKENS` | empty | Bearer tokens, `name=token,name2=token2`, for MCP calls and the session library. Empty means no auth. |
-| `TABOOM_MCP_ALLOWED_ORIGINS` | empty | Extra exact browser origins allowed. Loopback and the origin in `TABOOM_PUBLIC_URL` are allowed automatically. |
-| `TABOOM_VIEW_URL` | `http://localhost:<view port>/vnc.html?...` | Browser-visible live-view URL used by the dashboard and `view_url`. Set it when the view is reached through a remote host or reverse proxy. |
-| `TABOOM_PERSONA` | `default` | The persona this container runs: `personas/<name>.toml` in the data volume. |
-| `TABOOM_VAULT_PASSPHRASE_FILE` | `/run/secrets/taboom_vault_passphrase` | File holding the vault passphrase, read at boot when the route has `auth = "vault:<name>"`. |
-| `TABOOM_ROUTE_RECHECK_S` | `300` | Seconds between route re-checks (minimum 30). |
-| `TABOOM_RECORDINGS_MAX_GB` | empty | Cap on the recordings folder. Oldest finished sessions go first, checked at each session start. Empty keeps everything. |
-| `TABOOM_ROUTE_ECHO_URL` | `https://api.ipify.org` | HTTPS service that answers with the caller's IP, used to find the exit IP. Not in the Compose file; add it under `environment` to change it. |
-| `VINPUT_TRACE` | empty | A path inside the container, e.g. `/home/taboom/.taboom/logs/input-trace.jsonl`. Appends JSONL mouse, button, key, and wheel events. Off when empty. |
+| `session_start` | none | Acquire the desktop lease, load keyboard layout and start recording/idle input |
+| `session_end` | none | Release lease and held input; stop recording/idle input |
+| `persona_status` | none | Declared/applied settings, mismatches, route, session, capture state and calibration provenance |
+| `persona_generate` | `name`, `country` | Create a persona file; does not switch the running desktop |
+| `persona_list` | none | List persona files in this container's data volume |
+| `screenshot` | optional `max_edge`, `region` | Full PNG/frame mapping, or an inspection crop; edge cap 200–4096 |
+| `zoom` | `region: {x,y,w,h}` | Inspection crop without changing coordinate mapping |
+| `read_text` | optional `region` | Local OCR lines, boxes and confidence |
+| `find_text` | `text`, optional `region` | Normalized case-insensitive OCR substring matches |
+| `cursor_position` | none | Pointer coordinates in current screenshot space |
+| `click` | `x`, `y`, `describe` | Optional `button`, `count` (1–3), `frame_id` |
+| `move` | `x`, `y` | Move/hover with the configured movement model |
+| `drag` | `from`, `to`, `describe` | Hold left button and drag |
+| `scroll` | `direction`, `amount` | Wheel notches; optional `x`, `y` |
+| `mouse_down` | optional `button`, `x`, `y` | Hold a mouse button |
+| `mouse_up` | optional `button` | Release a mouse button |
+| `type` | `text` | `auto` by default; `keys` or `paste`; optional `submit` |
+| `key` | `combo` | Key/modifier combo or space-separated sequence, e.g. `ctrl+a Delete` |
+| `key_down` | `key` | Hold a key |
+| `key_up` | `key` | Release a key |
+| `hold_key` | `key`, optional `duration_ms` | Hold and release; default 1000 ms, max 10000 ms |
+| `wait` | `ms`, `until_settled` or `until_text` | Time or visual condition; condition cap defaults to 3000 ms, max 60000 ms |
+| `open_url` | `url` | Focus/reopen browser, open a new tab and type URL using keys |
+| `batch_actions` | `frame_id`, `actions` | Ordered sequence with per-step results and final screenshot |
+| `files_put` | `name`, `data_base64` | Stage a file in the container's Downloads folder |
+| `files_get` | `path` | Read a file within Downloads, max 20 MB |
+| `files_list` | none | List staged/downloaded files |
+| `clipboard_get` | none | Read desktop clipboard |
+| `clipboard_set` | `text` | Write desktop clipboard |
+| `view_url` | none | Watch `url` and interactive `takeover_url` |
+| `recording_list` | optional `persona`, `limit` | Session metadata/step counts; default limit 20 |
+| `recording_get` | optional `id`, `step`, `frames` | Read steps/images; default current session, 50 steps, max 10 images |
+| `recording_share` | optional `id`, `expires_in_s` | Signed replay/video links; default 7 days |
+| `detect_challenge` | optional `region` | OCR cue classification; agent confirms the visible challenge |
+| `challenge_click_hold` | `x`, `y`, `describe` | Timed hold; optional `frame_id` and hold range, default 800–2000 ms |
+| `challenge_slider` | `from`, `to`, `describe` | Drag with heuristic overshoot/correction |
+| `challenge_select` | `targets`, `describe` | Sequential native clicks, max 20 targets; optional `frame_id` |
+| `challenge_handoff` | optional `reason` | Return watch/control links; no automatic wait or lease transfer |
+| `computer` | `action` and action fields | Compatibility wrapper translating supported computer-use actions to native tools |
 
-Example `.env`:
+Desktop, vision, file, clipboard, view and challenge tools need an active session and a healthy route.
+`persona_status`, persona-file tools and recording tools are available without a lease.
+`session_end` remains available when the route is unhealthy.
 
-```bash
-TABOOM_MCP_PORT=4456
-TABOOM_VIEW_PORT=7080
-TABOOM_MCP_PUBLISH=127.0.0.1
-TABOOM_VIEW_PUBLISH=127.0.0.1
-TABOOM_MCP_TOKENS=claude=change-me-1,cursor=change-me-2
+Normal `type` in `keys` mode uses layout-aware strokes with heuristic rhythm and corrected typos.
+`auto` uses paste for text over 400 characters or characters unavailable on the layout. Secret
+placeholders always use exact keys and refuse paste.
+
+Challenge helpers provide input gestures and OCR suggestions. They do not solve challenges
+independently or establish that sites will accept the agent. `challenge_handoff` returns immediately;
+the agent asks the user to take control, pauses its own actions, and observes again after confirmation.
+
+## Human-data research
+
+
+The empirical mouse model is the default. It selects a comparable-distance human path, rotates,
+scales and optionally mirrors its geometry, then applies heuristic velocity and tremor. Movements
+outside 50–800 px use the heuristic movement planner.
+
+```mermaid
+flowchart LR
+    Data["Pinned A11y-CUA SU logs<br/>796 files, verified source digest"]
+    Data --> Train["p01–p06<br/>bounded path extraction"]
+    Train --> Library["Bundled library<br/>378 normalized 16-point paths"]
+    Library --> Runtime["Empirical mouse geometry<br/>50–800 px"]
+    Timing["Heuristic timing and tremor"] --> Runtime
+    Data --> Reserved["p07–p08<br/>shape-feature fixture"]
+    Runtime --> Traces["Seeded Rust trace exporter"]
+    Traces --> Eval["Shape regression diagnostic<br/>three sampling cadences"]
+    Reserved --> Eval
 ```
 
-With that file the links become `http://localhost:4456/` (home and MCP at `/mcp`) and
-`http://localhost:7080/` (live view). `TABOOM_PUBLIC_URL` and `TABOOM_VIEW_URL` are derived from
-these ports unless you override them for a remote host or reverse proxy.
+The source is the [Reduced A11y-CUA dataset](https://huggingface.co/datasets/berkeley-hci/Reduced-A11y-CUA),
+pinned at `26ee1103f74436cb7051543ba65d0c57902c0eb6`. Attribution and the source's CC BY 4.0
+license are retained in the artifact and [data documentation](lab/data/README.md).
 
-Apply changes with `docker compose up -d` (no rebuild needed).
+Mouse geometry is data-derived. Movement timing, clicking, typing, scrolling and idle drift
+remain heuristic. A stable persona seed sets motor habits; sessions use fresh randomness.
+Prompts/playbooks guide observation, batching and recovery but do not enforce human-like reasoning.
 
-### Personas
+The reserved groups are excluded from the runtime path library. Their scores are reused during
+development as a regression diagnostic, not an untouched scientific benchmark. The latest mean
+AUCs were 0.9514, 0.9433 and 0.9374; all are below the 0.97 regression ceiling, yet still show
+substantial distinguishability. General claims need new data and a separate evaluation protocol.
 
-A persona is one TOML file in the data volume, `/home/taboom/.taboom/personas/<name>.toml`, and
-it is the single source of truth for the container. `TABOOM_PERSONA` picks it. On first boot a
-missing file is written with US defaults, a direct route, a screen drawn from common hardware
-and a random humanizer seed, so `docker compose up` always has something valid to run.
+See [lab/README.md](lab/README.md) for extraction, comparison, baseline selection and limitations.
 
-```toml
-name = "shop"
-country = "DE"                    # unset timezone/identity fields default from it
-timezone = "Europe/Berlin"        # must be one of the country's zones (tzdata zone.tab)
-# cpus = 4                        # Chrome: set TABOOM_CPUSET=0-3 in .env; Fortress: override
-# ram_mb = 8192                    # Chrome: must match host deviceMemory; Fortress: override
+## Vault and secret entry
 
-[identity]
-locale = "de_DE.UTF-8"            # region must be the country
-languages = ["de-DE", "de", "en"] # first one matches the locale's language
-keyboard_layout = "de"            # an XKB layout
 
-[screen]
-width = 2560
-height = 1440
-scale = 1.25
-
-[browser]
-engine = "chrome"                 # or "fortress" in a Fortress-enabled linux/amd64 image
-
-[route]
-type = "socks5"                   # or "http", or "direct" (no url)
-url = "socks5://proxy.example.net:1080"
-auth = "vault:shop-proxy"         # never a password in this file
-# allow_datacenter = true         # accept an exit in a hosting/cloud ASN
-
-[humanizer]
-seed = 81723                      # stable typing and mouse habits
-mouse_model = "empirical"           # default; "heuristic" selects the comparison baseline
-```
-
-Countries with built-in defaults: US, GB, DE, FR, JP, BR, IN. For others set `timezone` and all
-of `[identity]`. Unknown keys (including `[hardware]`, `accept_languages`,
-`humanizer_style` and plain `username`/`password`) are refused, so a stale file fails boot with
-the list of problems instead of running half-applied. To start over from defaults, delete the
-file and restart.
-
-How each field reaches the runtime:
-
-```
- field              applied by                                        checked
- ─────────────────  ────────────────────────────────────────────────  ─────────────────────────
- timezone           TZ for sway, bar and browser; Fortress              zone.tab vs country
-                    also receives --uxr-timezone
- country            route exit check; Fortress --uxr-country              ISO 3166 uppercase
- locale, languages  LANG + LANGUAGE, Chrome --lang and                  locale/country/first
-                    Preferences, Fortress --uxr-languages                language agree
-                    before Chrome starts
- keyboard_layout    XKB_DEFAULT_LAYOUT for vinput, sway xkb_layout      XKB layout exists
- screen             sway output mode WxH scale S; Fortress              800-7680 x 600-4320, 1-3
-                    --uxr-screen-width/height
- languages          fontconfig accepts locale-relevant families         (Latin set + CJK, Arabic,
-                    (installed families remain as fallbacks)                             Hebrew, Devanagari, Thai)
- cpus               Chrome: Compose cpuset; Fortress:                  Chrome boot fails if cpuset
-                    --uxr-hw-concurrency                                differs; Fortress > 0
- ram_mb             Chrome: host value only; Fortress:                  Chrome value must map to
-                    --uxr-device-memory                                 host deviceMemory; > 0
- humanizer.seed     mouse/typing style; Fortress                        stable derived seed if unset
-                    --uxr-canvas-seed/--uxr-audio-seed
- browser.engine     taboom-browser and the private-pipe launcher         Chrome default; Fortress
-                                                                        build and arch required
- route              see "Network route" below                           exit IP at boot + re-checks
-```
-
-Chrome's `navigator.deviceMemory` and `hardwareConcurrency` are based on the hardware visible to
-the container. If a persona sets `cpus`, set `TABOOM_CPUSET` in the Compose `.env` file to the
-matching host CPU ids (for example, `0-3`); CPU quotas do not change Chrome's reported count.
-Current desktop Chrome rounds `deviceMemory` to the nearest power of two, resolves exact ties
-downward, and clamps the result to 2–32 GB; container memory limits do not change that reading.
-`persona_status` reports these values as Chrome sees them instead of pretending otherwise. An
-optional `ram_mb` must map to that same Chrome value; it does not change Chrome's hardware report.
-When Fortress is selected, its documented `--uxr-device-memory` override uses `ram_mb` when set,
-or the host's physical memory rounded through `device_memory_gb` otherwise; Docker memory limits
-do not change the fallback value.
-`persona_status` also compares the declared values with what the running desktop shows and
-lists any mismatch. Edit the file, then `docker compose restart taboom` to apply it.
-
-### Optional Fortress engine
-
-Chrome remains the default and multi-architecture image. To include Fortress, build the image on
-Linux/amd64 with the explicit build argument, then set `engine = "fortress"` in the selected
-persona and restart. Set `TABOOM_HOST_ARCH` in the Compose `.env` file to the Docker host's
-architecture (`amd64` or `arm64`) so boot-check can reject an amd64 image running under ARM
-emulation. For a remote Docker context, use the remote daemon host's architecture. If unset, the
-value is `unknown` and Fortress validation fails closed; Chrome does not need this setting.
-
-```dotenv
-TABOOM_HOST_ARCH=amd64
-```
-
-```bash
-TABOOM_ENGINES=chrome,fortress docker compose build
-docker compose up -d
-```
-
-The build pins Fortress v150.0.7871.114 and checks the downloaded Linux x64 archive against its
-official release `SHA256SUMS` entry before extraction. Unsupported engine lists and non-amd64
-Fortress targets fail with a build error. `taboom persona check` and boot-check also refuse
-Fortress if the running image lacks it, its runtime architecture is not x86_64, or Compose reports
-a non-x86_64 Docker host.
-
-Taboom maps country, timezone, language list, screen width/height, CPU count and physical memory
-to Fortress's documented `--uxr-*` flags. With no `cpus` value, it uses the process's visible CPU
-count; an explicit `cpus` value overrides that. `humanizer.seed` (or its stable name-derived
-fallback) is sent as both `--uxr-canvas-seed` and `--uxr-audio-seed`. These two seeds pin canvas and
-audio noise; they do not freeze every part of Fortress's generated identity. Taboom never sends
-`--user-agent`, which Fortress documents as breaking consistency between the UA string and
-Client-Hints. The ordinary `TZ`, `LANG`, `LANGUAGE`, XKB and persona-aware fontconfig setup still
-applies. Taboom uses Fortress's upstream launcher for its browser setup while directing its
-fontconfig choice back to Taboom's language-aware configuration; its private CDP pipe remains
-owned by `taboomd`.
-
-The Fortress release contains an opaque persona-generation component and device model data; the
-public repository does not make those internals auditable. Fortress can receive page contents and
-the keystrokes Taboom uses to type vault secrets. Existing vault domain checks still apply, but
-only use the browser binary and destination sites you trust. Fortress's persona flags are visible
-in `/proc/<pid>/cmdline` to processes with access to the container; they contain persona values,
-never vault values. Its built-in identity can still vary on surfaces Taboom does not override, so a
-persistent profile does not by itself guarantee one identical fingerprint across launches.
-
-Profiles are plain local folders (`profiles/<name>`). There is no Google account: signing in to
-Chrome and sync are turned off by policy (`image/chrome-policy.json`). Sites you log in to stay
-logged in.
-
-### Network route
-
-```
- Chrome ──socks5──> taboomd forwarder 127.0.0.1:1080 ──(credentials from the vault)──> your proxy
-   │                  │                                                                   │
-   │ no local DNS     └─ closed when a route check fails; no direct fallback              └─> site
-   │ (names resolve at the proxy; QUIC off under SOCKS5; WebRTC only through the proxy)
-```
-
-- **Direct** (`type = "direct"`, the default): no proxy. If `GeoLite2-Country.mmdb` is in the
-  data volume, the exit country must match `country`; without it the check is skipped.
-- **Proxy** (`socks5` or `http`): boot needs `GeoLite2-Country.mmdb` and `GeoLite2-ASN.mmdb` in
-  `/home/taboom/.taboom/`, finds the exit IP through the proxy (HTTPS echo), and refuses to start
-  when the exit country is not `country` or the ASN is a known datacenter
-  (`crates/taboomd/data/datacenter-asns.txt`). A dead proxy means no traffic, never a direct
-  connection.
-- **Re-check** every `TABOOM_ROUTE_RECHECK_S`. A failure closes the forwarder to new
-  connections, shows in `persona_status`, and refuses agent actions until a check passes again.
-
-Proxy credentials live in the vault, never in the persona file. The vault is unlocked at boot
-with a passphrase from `TABOOM_VAULT_PASSPHRASE_FILE`, mounted as a Compose secret. Initialize
-the vault and add the proxy credential while the persona still uses the direct route:
+The local operator stores password, note or TOTP items in the encrypted vault:
 
 ```bash
 docker compose exec -it taboom taboom vault init
-docker compose exec -it taboom taboom vault add shop-proxy --type password --domains proxy.example
-
-# 2. put the same passphrase in a file on the host (keep it out of git)
-read -s -p 'Vault passphrase: ' VAULT_PASSPHRASE; printf '\n'
-printf '%s' "$VAULT_PASSPHRASE" > ./vault-passphrase && chmod 600 ./vault-passphrase
-unset VAULT_PASSPHRASE
+docker compose exec -it taboom taboom vault add github --type password --domains github.com
+docker compose exec -it taboom taboom vault unlock
 ```
 
-Then mount it with a `docker-compose.override.yml`, switch the persona's `[route]` to the proxy
-with `auth = "vault:shop-proxy"`, and restart:
+Commands prompt privately for values/passphrases. The vault is locked after a daemon restart;
+unlock it again before MCP secret entry. Agents send only a placeholder:
+
+```json
+{"text": "<secret>github</secret>", "mode": "keys"}
+```
+
+```mermaid
+sequenceDiagram
+    participant A as External agent
+    participant D as taboomd
+    participant V as Local vault
+    participant R as Recorder
+    participant B as Browser desktop
+    A->>D: type with secret placeholder
+    D->>D: Check lease, route, focus, HTTPS host and allow-list
+    D->>V: Resolve item locally after checks
+    V-->>D: Secret or current TOTP code
+    D->>D: Wait for capture, pause trace and recheck guards
+    D->>R: Finish active video clip
+    D->>D: Repeat host/focus/route checks and invalidate queued frames
+    D->>B: Exact layout-aware keystrokes
+    D->>D: Restore input trace
+    D->>R: Resume saved frames and video
+    D-->>A: Result with no expanded secret value
+    A->>D: Fresh screenshot or OCR
+    D-->>A: Live perception with potentially visible credentials
+```
+
+Entry requires an unlocked vault, healthy route, focused non-fullscreen browser, supported keyboard
+characters and an allowed HTTPS hostname. Allowed domains match the exact host and subdomains;
+an empty list denies use.
+
+The private browser pipe supplies only normalized HTTP(S) page-host candidates. Private omnibox
+OCR selects the matching visible host. All open page tabs/windows must be on that host; other hosts
+or opaque pages such as `about:blank`, `data:`, `blob:` and `file:` refuse entry. Hidden schemes are
+accepted only with an HTTPS candidate and no same-host HTTP candidate. Low-confidence OCR or a
+host mismatch refuses entry.
+
+This gate cannot prove the page field rather than the address bar has focus or prevent an
+immediate navigation after the checks. Ground the intended field in a screenshot and click it
+before using a placeholder. The private OCR result is not returned, cached or recorded.
+
+During exact secret keystrokes, input tracing and saved visual capture pause. Afterward,
+screenshots, zoom, OCR, saved frames and video resume. Earlier and resumed video clips are joined;
+the secret-entry interval is omitted. The human live view continues throughout.
+
+**Screen content is not redacted afterward.** Visible credentials can appear in responses and
+saved/shared artifacts. Tool argument logs retain placeholders and secret-use audit records exclude
+values. Use masked fields and review artifacts before sharing. Legacy persistent capture-blocking
+markers are removed automatically during upgrade.
+
+## Live view and recordings
+
+
+The dashboard offers watch/control links and a searchable, status-filtered, paginated session
+library. With MCP tokens configured, the library requires a bearer token held in tab-scoped session
+storage. noVNC itself has no password and does not observe the agent's session lease; coordinate
+manual control with the agent.
+
+Recordings contain:
+
+```text
+/home/taboom/.taboom/recordings/<id>/
+  meta.json              Persona, client and start/end times
+  events.jsonl           Ordered tool steps, arguments, outcome and duration
+  frames/                Exact returned images or delayed action captures
+  video.mkv              Initial active video clip
+  video-part-*.mkv        Resumed clips after secret entry, while active/finalizing
+  video.mp4              Finalized/joined H.264 video, at most 1280 pixels wide
+```
+
+Not every step has a frame. Action captures are scheduled about 400 ms later and may be skipped
+or unavailable while pending. Successful screenshots/crops store the image returned to the agent.
+Batch inner actions are recorded individually. Video finalization runs asynchronously after session end.
+
+`recording_get` supports `from_step`/`limit` pagination; `step` returns a specific step and image.
+`frames: true` returns at most 10 images per call. `recording_share` defaults to **7 days** and
+clamps lifetimes to 60 seconds–90 days. Dashboard session links use **24 hours**. Share links are
+bearer capabilities: anyone holding a valid link can access its replay, frames and video.
+
+`TABOOM_RECORDINGS_MAX_GB` prunes the oldest finished sessions at the next session start. It is
+a retention check, not a hard disk quota. Active sessions are retained. Audit logs are separate
+and survive recording cleanup. `files_put` payloads are omitted from step arguments.
+
+## Configuration and personas
+
+
+Copy [`.env.example`](.env.example) to `.env` for local settings. Compose reads it automatically.
+Recreate with `docker compose up -d` after changing environment settings; `restart` only restarts
+the existing container with its existing environment.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `TABOOM_VERSION` | `latest` | GHCR image tag; `--build` builds this checkout |
+| `TABOOM_MCP_PORT` / `TABOOM_VIEW_PORT` | `3456` / `6080` | Host ports |
+| `TABOOM_MCP_PUBLISH` / `TABOOM_VIEW_PUBLISH` | `127.0.0.1` | Separate host bind addresses |
+| `TABOOM_PUBLISH` | unset | Legacy fallback for both bind addresses |
+| `TABOOM_MCP_TOKENS` | empty | Named bearer tokens, `agent-a=token-a,agent-b=token-b` |
+| `TABOOM_MCP_ALLOWED_ORIGINS` | empty | Extra exact origins for browser-hosted MCP clients |
+| `TABOOM_PUBLIC_URL` | `http://localhost:<MCP port>` | Dashboard/replay public base URL |
+| `TABOOM_VIEW_URL` | local watch URL | Browser-visible noVNC URL, including `view_only=1` for watch mode |
+| `TABOOM_PERSONA` | `default` | Select `personas/<name>.toml` in the data volume |
+| `TABOOM_CPUSET` | unset | Host CPU IDs visible to Chrome, e.g. `0-3` |
+| `TABOOM_ENGINES` | `chrome` | Build `chrome` or `chrome,fortress` |
+| `TABOOM_HOST_ARCH` | `unknown` | Host architecture; Fortress requires `amd64` |
+| `TABOOM_ROUTE_RECHECK_S` | `300` | Route recheck interval, minimum 30 seconds |
+| `TABOOM_VAULT_PASSPHRASE_FILE` | `/run/secrets/taboom_vault_passphrase` | Mounted passphrase used to resolve proxy credentials |
+| `TABOOM_RECORDINGS_MAX_GB` | unset | Recording retention check at session start |
+| `VINPUT_TRACE` | unset | In-container JSONL input trace path |
+| `TABOOM_GIT_COMMIT` | unset | Commit metadata override for the manual gauntlet |
+
+Daemon overrides `TABOOM_ROUTE_ECHO_URL` (default `https://api.ipify.org`),
+`TABOOM_MAX_EDGE` (default 1280) and `TABOOM_FILES_DIR` (default Downloads) are not forwarded by
+the supplied Compose file; add them under the service's `environment` to use them.
+
+### Persona files
+
+
+A file's `name` must match its filename and the selected `TABOOM_PERSONA`:
+
+```toml
+name = "shop"
+country = "DE"
+timezone = "Europe/Berlin"
+
+[identity]
+locale = "de_DE.UTF-8"
+languages = ["de-DE", "de", "en"]
+keyboard_layout = "de"
+
+[screen]
+width = 1920
+height = 1080
+scale = 1.0
+
+[browser]
+engine = "chrome"
+
+[route]
+type = "direct"
+
+[humanizer]
+seed = 81723
+mouse_model = "empirical"
+```
+
+Country defaults are available for US, GB, DE, FR, JP, BR and IN; other countries require explicit
+timezone/identity settings. Unknown fields fail parsing. `boot-check` validates the selected file
+and applies timezone, locale/languages, XKB layout, screen, fonts, profile and route.
+
+On a new profile without `History`, Taboom seeds synthetic country-based history, bookmarks and
+top sites. This is local fixture data: it does not visit those sites or create authenticated accounts.
+Existing profiles retain cookies and site logins. Chrome account sign-in/sync is disabled by policy.
+
+Optional `cpus` for Chrome must match its actual visible CPU set; quotas do not change that count.
+Optional `ram_mb` must match Chrome's reported memory bucket; container memory limits do not
+override it. Fortress applies supported hardware overrides. See the [runtime field mapping](docs/PLAN.md#persona-and-profile-lifecycle).
+
+Create a candidate file with `persona_generate` or the operator CLI:
+
+```bash
+docker compose exec taboom taboom persona new shop --country DE
+TABOOM_PERSONA=shop docker compose up -d --wait
+```
+
+Selecting another file recreates the container with a different profile; it is an operator
+configuration change. The running agent cannot switch personas through a tool call.
+
+### Several personas
+
+
+Use separate projects, volumes and ports. Keep each project's settings in its own environment file
+or repeat the same variables for later lifecycle commands:
+
+```bash
+TABOOM_PERSONA=shop TABOOM_MCP_PORT=3457 TABOOM_VIEW_PORT=6081 \
+  docker compose -p shop up -d --build --wait
+
+TABOOM_PERSONA=work TABOOM_MCP_PORT=3458 TABOOM_VIEW_PORT=6082 \
+  docker compose -p work up -d --build --wait
+```
+
+A missing file creates a US default even when its name is `shop` or `work`. Supply/edit a persona
+file to choose another country. Containers on the same host share its physical hardware.
+
+### Optional Fortress
+
+
+Fortress is an opt-in source build on **native Linux AMD64**, including an AMD64 BuildKit builder.
+The installer pins `150.0.7871.114` and verifies the archive's official `SHA256SUMS` entry.
+ARM targets/builders and emulated ARM hosts are refused.
+
+Set these in the Compose `.env`:
+
+```dotenv
+TABOOM_ENGINES=chrome,fortress
+TABOOM_HOST_ARCH=amd64
+TABOOM_PERSONA=fortress
+```
+
+Provide `personas/fortress.toml` with `name = "fortress"` and `[browser] engine = "fortress"`,
+then build/recreate with `docker compose up -d --build --wait`. Use a fresh profile when changing
+engines to avoid opening a newer Chrome profile with an older browser.
+
+The selected engine receives the persona's supported country, timezone, language, screen and
+hardware flags. Canvas/audio seeds use `humanizer.seed`; those seeds do not freeze every
+fingerprint surface. Fortress is a third-party browser binary, separate from Taboom's code.
+Native Fortress desktop smoke is required by CI before a release is published.
+
+## Network routes and remote access
+
+
+Direct access is the default. For `socks5` or `http` proxy routes:
+
+```toml
+[route]
+type = "socks5"
+url = "socks5://proxy.example.net:1080"
+auth = "vault:shop-proxy"
+# allow_datacenter = true
+
+```
+
+Store `shop-proxy` as a vault item whose value is `user:password`; keep values out of the persona
+file. Proxy routes require `GeoLite2-Country.mmdb` and `GeoLite2-ASN.mmdb` in the data directory.
+The verified exit must match the persona's country; datacenter ASNs are refused unless explicitly
+allowed. Direct routes check country when a country database is available and skip that check otherwise.
+
+Proxy credentials are resolved using a mounted passphrase file:
 
 ```yaml
+# docker-compose.override.yml
 services:
   taboom:
     secrets: [taboom_vault_passphrase]
@@ -859,243 +640,185 @@ secrets:
     file: ./vault-passphrase
 ```
 
-GeoLite2 databases come from MaxMind (free account). Copy them in with
-`docker compose cp GeoLite2-Country.mmdb taboom:/home/taboom/.taboom/` (and the ASN one).
+Create that private host file with the vault passphrase and restrictive permissions; it is ignored
+by Git. This route credential lookup does **not** unlock the daemon's MCP typing vault.
+Use `taboom vault unlock` after a restart when the agent needs website credentials.
 
-### Several personas on one host
+The browser connects through Taboom's local SOCKS5 forwarder on `127.0.0.1:1080`. Names resolve
+upstream, and proxy flags/policy restrict direct browser DNS, QUIC and WebRTC paths. Route failures
+close the forwarder to new connections and refuse guarded tools until a recheck passes.
+See the [route architecture](docs/PLAN.md#network-route).
 
-Each persona is its own Compose project: its own container, its own data volume (Compose
-prefixes the volume with the project name), its own ports.
+### Remote access
+
+
+Configure named bearer tokens before publishing MCP beyond loopback:
+
+```dotenv
+TABOOM_MCP_PUBLISH=0.0.0.0
+TABOOM_VIEW_PUBLISH=127.0.0.1
+TABOOM_MCP_TOKENS=agent-a=replace-with-private-token
+TABOOM_PUBLIC_URL=https://taboom.example.com
+```
+
+MCP refuses a non-loopback published address without tokens. Tokens protect `/mcp` and
+`/api/sessions`. Each token name identifies a session holder; without tokens clients share
+`anonymous`, so independent clients can interfere with the same lease.
+
+Taboom serves plain HTTP. Use TLS or a trusted private network for remote traffic. Browser-hosted
+clients need an allowed Origin; configure exact extra origins with `TABOOM_MCP_ALLOWED_ORIGINS`.
+Loopback origins and the `TABOOM_PUBLIC_URL` origin are allowed automatically.
+
+The dashboard page and health endpoint are public. noVNC has no built-in authentication, and signed
+replay links authorize their holder independently of MCP tokens. Keep these access paths configured
+for the intended audience. Set `TABOOM_VIEW_URL` separately when the view uses a reverse proxy.
+
+## Operations and troubleshooting
+
 
 ```bash
-TABOOM_PERSONA=shop TABOOM_MCP_PORT=3457 TABOOM_VIEW_PORT=6081 docker compose -p shop up -d
-TABOOM_PERSONA=work TABOOM_MCP_PORT=3458 TABOOM_VIEW_PORT=6082 docker compose -p work up -d
+docker compose up -d --build --wait  # Rebuild and start this checkout
+docker compose up -d --wait          # Start/recreate with current configuration
+docker compose restart taboom        # Restart; re-read selected persona file
+docker compose logs -f taboom        # Service logs
+docker compose down                 # Stop; preserve named data volume
+docker compose exec taboom bash      # Operator shell
 ```
 
-```
- project "shop"  ->  container shop-taboom-1, volume shop_taboom-data, :3457 MCP, :6081 view
- project "work"  ->  container work-taboom-1, volume work_taboom-data, :3458 MCP, :6082 view
-```
+`docker compose down -v` deletes the named data volume, including personas, browser profiles,
+vault, recordings, audit and logs. Rebuilds/recreation preserve that volume. Downloads are outside
+it by default: retrieve staged/downloaded files before container recreation. The `lab/` directory
+is a host bind mount for gauntlet artifacts; `.git` is mounted read-only for commit metadata.
 
-Pass the same `-p` (and variables) to every later command, e.g.
-`docker compose -p shop logs -f`. To give a project its persona file before first boot, copy it
-in and restart: `docker compose -p shop cp shop.toml taboom:/home/taboom/.taboom/personas/`.
-Containers on one host share its hardware, which is real, so no persona pretends otherwise.
+### Operator CLI
 
-### What persists
-
-```
- volume           mounted at                      holds
- ──────────────   ─────────────────────────────   ──────────────────────────────────────
- taboom-data      /home/taboom/.taboom            persona file, Chrome profile (profiles/),
-                                                  vault, GeoLite2 databases, audit log,
-                                                  recordings, logs
-```
-
-Logins survive `docker compose down` and rebuilds. Only `docker compose down -v` wipes them.
-
----
-
-## 8. Auth and remote access
-
-By default both ports are published on `127.0.0.1` only. Only programs on your own machine can
-reach them. To expose MCP to your network while keeping the live view local, set
-`TABOOM_MCP_PUBLISH=0.0.0.0`, leave `TABOOM_VIEW_PUBLISH=127.0.0.1`, and configure bearer tokens.
-Taboom refuses to start MCP on a non-loopback published address when no tokens are configured.
-
-To let other machines (or several agents with separate identities) connect:
-
-```
-  1. set tokens            TABOOM_MCP_TOKENS=claude=tok-a,cursor=tok-b
-  2. publish MCP           TABOOM_MCP_PUBLISH=0.0.0.0
-     keep live view local  TABOOM_VIEW_PUBLISH=127.0.0.1 (the default)
-  3. restart               docker compose up -d
-  4. each client sends     Authorization: Bearer tok-a
-```
-
-Each token name is its own session holder. Without tokens every client is `anonymous` and they all
-share one identity, so two agents can step on each other.
-
-A request without a valid token gets `401 unauthorized`. The server speaks plain HTTP, so if it
-crosses an untrusted network put it behind a TLS reverse proxy (Caddy, nginx) or a private
-network like Tailscale. Browser-hosted MCP clients with a different origin must add that exact
-origin to `TABOOM_MCP_ALLOWED_ORIGINS`. The origin in `TABOOM_PUBLIC_URL` is allowed automatically,
-which lets the dashboard unlock its session list on that host.
-
-Tokens protect `/mcp` and `/api/sessions`. The dashboard itself remains public, but hides session
-data until a token unlocks it in the current browser tab. The live view on `:6080` has no password,
-and anyone holding a recording share link can open that replay. Keep the live view on loopback
-unless it is behind a private network or proxy authentication, and set `TABOOM_PUBLIC_URL` so share
-links point at the right host.
-
----
-
-## 9. Day-to-day commands
 
 ```bash
-docker compose up -d --build     # start, rebuilding if code changed
-docker compose up -d             # start with the existing image
-docker compose ps                # status and health
-docker compose logs -f taboom    # follow logs
-docker compose restart taboom    # re-apply the persona file, clear a stuck browser
-docker compose down              # stop, keep data
-docker compose down -v           # stop and WIPE persona file, vault, browser profile and privacy marker
-docker compose exec taboom bash  # shell inside the container
-```
+docker compose exec taboom taboom status
+docker compose exec taboom taboom persona show
+docker compose exec taboom taboom persona check
+docker compose exec taboom taboom logs -n 100
+docker compose exec taboom taboom recordings ls
+docker compose exec taboom taboom recordings share RECORDING_ID
 
-### The `taboom` CLI
-
-The image includes a local operator CLI. Run it with `docker compose exec taboom taboom ...`.
-Vault passphrases and secret values are read at a hidden terminal prompt; use an interactive
-exec (`-it`) and do not put them in command arguments, shell history, or MCP calls.
-
-```bash
-docker compose exec -it taboom taboom vault init
+docker compose exec -it taboom taboom vault status
 docker compose exec -it taboom taboom vault unlock
 docker compose exec -it taboom taboom vault add github --type password --domains github.com
 docker compose exec taboom taboom vault ls
 docker compose exec taboom taboom vault rm github
 docker compose exec taboom taboom vault lock
-docker compose exec taboom taboom vault status
 
-docker compose exec taboom taboom persona new shop --country DE
-docker compose exec taboom taboom persona show
-docker compose exec taboom taboom persona check
-docker compose exec taboom taboom status
-docker compose exec taboom taboom logs -n 100
-docker compose exec taboom taboom recordings ls
-docker compose exec taboom taboom recordings share RECORDING_ID
+docker compose exec taboom taboom call session_start '{}'
 docker compose exec taboom taboom call open_url '{"url":"https://example.com"}'
-docker compose exec taboom taboom gauntlet
+docker compose exec taboom taboom call session_end '{}'
 ```
 
-`persona new` creates a validated file without replacing an existing one. Restart the container
-to apply it. `vault add --domains` accepts comma-separated domain names. `taboom call` invokes the
-MCP tool directly; it does not send the call through an LLM. If multiple MCP tokens are configured,
-choose one stable session identity with `docker compose exec -e TABOOM_CLI_CLIENT=agent-a taboom taboom ...`.
-With one configured token the CLI selects it automatically; with no tokens it uses `anonymous`.
-The manual `gauntlet` command takes the desktop lease, visits CreepJS, sannysoft, BrowserScan,
-and pixelscan, then saves a PNG and local OCR text for each page under `lab/gauntlet/`. It appends
-persona, engine and commit metadata to `lab/scoreboard.json`. It requires screen capture and OCR;
-if a screenshot cannot be captured, it releases the session and stops before opening a
-detector page. Vault typing does not permanently block the gauntlet's explicit captures. It also refuses to run while another desktop session is active. Compose mounts
-`lab/` read-write and `.git` read-only; when a worktree's `.git` file points outside that mount,
-set `TABOOM_GIT_COMMIT` to include the commit. Otherwise the scoreboard records `unknown` and the
-command reports that Git metadata was unavailable.
-Use `taboom --help` and `taboom vault --help` for the complete command list.
+`taboom call` uses the MCP tools directly without an LLM. With multiple configured tokens, select
+a stable identity via `docker compose exec -e TABOOM_CLI_CLIENT=agent-a taboom taboom ...`.
+With one token it is selected automatically; without tokens the identity is `anonymous`.
+Use `taboom --help` for the full operator interface.
 
-See what the browser sees without an agent:
+| Symptom | Check/action |
+|---|---|
+| Container unhealthy or boot-check failed | Read service logs; fix persona/route errors before restarting |
+| MCP cannot connect | Verify container health, published port and token header |
+| `no active session` | Call `session_start` |
+| Lease held by another identity | Let that holder finish, or use a separate project |
+| Route check failed | Inspect `persona_status`; fix the route and wait for a passing recheck |
+| Stale frame or geometry changed | Take a fresh full screenshot and replan |
+| Wait cap reached | Check `found`/`settled` and observe; do not assume success |
+| Secret entry refused | Unlock vault; check allowed HTTPS host, browser focus, fullscreen and all open page tabs/windows |
+| Browser closed | Click Browser on the bar or use `super+b`; `open_url` also reopens it |
+| Grey live view/blank capture | Inspect desktop logs; restart the container if needed |
+| Browser tab crashes | Check available shared memory; Compose defaults to `shm_size: 1gb` |
+| Port in use | Set separate MCP/view host ports and recreate |
+| Network publication refused | Configure named MCP bearer tokens before exposing that address |
+| Cross-origin client refused | Add its exact origin to the allow-list |
+
+Desktop shortcuts: `super+b` browser, `super+Return` terminal, `super+d` launcher,
+`super+shift+q` close window, `super+f` fullscreen, `super+arrows` focus,
+`super+1..4` workspaces. The top bar also exposes Browser, Terminal and Apps.
+
+## Development and publishing
+
+
+Use a Rust toolchain and Python 3.10 or later (CI uses 3.12). From the repository root:
 
 ```bash
-docker compose exec taboom grim /tmp/s.png && docker compose cp taboom:/tmp/s.png ./screen.png
-```
-
----
-
-## 10. Troubleshooting
-
-```
- symptom                               likely cause / fix
- ────────────────────────────────────  ──────────────────────────────────────────────────
- container keeps restarting            logs say "sway did not start": check that
-                                       security_opt seccomp:unconfined is still set
- claude mcp list: failed to connect    container not healthy yet, or wrong port.
-                                       curl the smoke test from section 1
- container exits: "boot-check failed"   the log lists every problem in the persona file,
-                                       or the route failure. Fix it and restart
- "no active session; call              the agent skipped session_start. Tell it to
-  session_start first"                 start a session first
- "held by 'anonymous'"                 clients without tokens all share "anonymous".
-                                       Call session_end, then session_start again
- "held by '<other name>'"              another agent has the desktop. End it there, or
-                                       run another persona in another project
- "route check failed"                  the exit IP moved country, hit a datacenter ASN,
-                                       or the proxy died. persona_status shows why;
-                                       actions resume after a passing re-check
- 401 unauthorized                      tokens are set; add the Authorization header
- MCP refuses network publish            set TABOOM_MCP_TOKENS before publishing MCP beyond loopback
- MCP origin refused                     add the browser client's exact origin to TABOOM_MCP_ALLOWED_ORIGINS
- port 3456 or 6080 already in use      set TABOOM_MCP_PORT / TABOOM_VIEW_PORT in .env,
-                                       docker compose up -d, re-add the MCP client
-                                       with the new URL
- browser tabs crash / "Aw, Snap!"      raise shm_size in docker-compose.yml
- blank or black screenshots            docker compose restart taboom
- live view page loads but stays grey   docker compose logs taboom | grep wayvnc; restart
- browser window is gone                click Browser in the top bar, or key super+b
- "could not read the keyboard layout"  vinput is not running; docker compose restart
- "take a new screenshot"               the screen changed or frame_id is old. Screenshot,
-                                       then use the new coordinates
- "<secret> placeholders refused"       check that the vault is unlocked, the hostname is allowed, Chrome is
-                                       focused and not fullscreen, the visible omnibox matches an HTTPS page host,
-                                       and no tabs on other sites or blank/data: popups are open
-recording pauses during secret      expected: capture resumes afterward; visible credentials may be recorded
- Apple Silicon build is slow           expected on first build; later builds are cached
-```
-
----
-
-## 11. Developing
-
-The Docker image is the supported way to run. Native builds are for working on the code.
-
-```bash
-cargo build --release            # builds the workspace binaries taboomd and taboom
-cargo test --workspace --locked   # Rust tests; 3 desktop-only tests are ignored here
+cargo build --release --locked
+cargo test --workspace --locked
 cargo run --locked -p taboom-humanizer --example trace_export -- lab/traces.jsonl
+python3 -m venv .venv
+. .venv/bin/activate
 python3 -m pip install -e "./lab[dev]"
-python3 -m pytest lab             # eval lab (Python)
+python3 -m pytest lab
+python3 -m taboom_lab.shape_eval \
+  --human-fixture lab/data/a11y_cua_su_shape_features.json \
+  --rust-traces lab/traces.jsonl --human-groups p07 p08 --max-mean-auc 0.97
+docker compose config --quiet
 ```
 
-After changing Rust code, rebuild the container: `docker compose up -d --build`.
-
-The Docker-only architecture and development notes live in [`docs/PLAN.md`](docs/PLAN.md).
-
-For a real desktop smoke test, use a disposable Compose project with its own volume. The test
-stages a local form, fills three visible fields in one batch, and exercises all tools, including
-recording, file transfer, persona generation and gesture helpers. It changes the test desktop and
-clipboard; run it when no session is active:
+Three Rust tests require a Linux desktop and are ignored by the host suite. The public MCP smoke
+script covers the actual desktop separately. Run it against a disposable Compose project with no
+active agent session:
 
 ```bash
 docker compose -p taboom-test up -d --build --wait --wait-timeout 180
-python3 scripts/desktop_smoke.py --artifacts /tmp/taboom-smoke
+python3 scripts/desktop_smoke.py --engine chrome --artifacts /tmp/taboom-smoke
 docker compose -p taboom-test down
 ```
 
-Use different host ports if another instance is running, then pass `--url http://localhost:<port>`. For token-protected MCP,
-set `TABOOM_SMOKE_TOKEN` in the test process environment. The smoke script uses the default screen
-configuration and synthetic form values. A passing local fixture does not establish success on
-every live site or for external agent decision-making.
+Use separate ports and `--url` if another instance is running. For authenticated MCP, provide
+`TABOOM_SMOKE_TOKEN` to the script. It stages a local form, changes the clipboard, creates persona
+and recording artifacts, fills visible fields in one batch and verifies them without submission.
+The script fails if any exposed tool was not exercised. Its success is a fixture result.
 
-### Publishing a release
+After changing playbooks/prompts, rebuild too: these Markdown files are compiled into the daemon.
 
-Update the workspace version in `Cargo.toml`, run the checks above, then push a matching version
-tag such as `v0.1.0`. The release workflow builds Chrome images for `linux/amd64` and `linux/arm64`
-in GHCR and creates a GitHub release with generated notes after Rust/lab and native AMD64
-desktop-smoke CI pass for both Chrome and Fortress.
-Prerelease tags create a GitHub prerelease and do not update `latest`. Fortress remains an opt-in source build.
+### Manual gauntlet
 
-After the first publish, set the GHCR package visibility to public in the repository's Packages
-settings so self-hosters can pull without logging in. Users can pin the image with `TABOOM_VERSION`
-in `.env`; `.env.example` shows the available deployment settings.
 
----
+`docker compose exec taboom taboom gauntlet` takes the desktop lease, visits the configured
+detector sites and saves screenshots/OCR under `lab/gauntlet/`, with metadata in `lab/scoreboard.json`.
+It refuses an already-active session and releases its lease on failure. It is a manual diagnostic,
+not a CI pass/fail measure or evidence of general detection avoidance. `VINPUT_TRACE` captures
+real input events; live traces lack action boundaries, unlike the seeded exporter.
 
-## 12. Repo map
+### Release workflow
 
-```
- crates/
-   taboom-core/        shared persona types, consistency checks, admin protocol
-   taboom-cli/         local operator CLI (`taboom`)
-   taboomd/            daemon: MCP server (src/mcp.rs), tools (src/handler.rs),
-                       persona file (src/persona.rs), boot-check (src/boot.rs),
-                       route forwarder + checks (src/route.rs), recordings
-                       (src/recording.rs), session lease, vault, audit
-   taboom-humanizer/   human-like mouse and typing models
- docker/               Dockerfile, entrypoint, sway config, vinput (virtual mouse + keyboard),
-                       taboom-browser (starts Chrome with the persona's flags from run/env)
- docker-compose.yml    the one-command stack
- image/                Chrome policy installed in the container
- skills/               agent playbook (SKILL.md) and per-site notes
- lab/                  Python eval lab: recorder, detector, model fitting
- docs/PLAN.md          Docker-only architecture and development notes
-```
+
+The release workflow is triggered by a pushed `v*` tag whose version matches the Cargo workspace
+version. Run hosted verification for the intended commit before tagging. Update `Cargo.toml` and
+the workspace entries in `Cargo.lock` together when changing versions.
+
+The workflow requires Rust/lab checks plus native AMD64 desktop smoke for **both Chrome and
+Fortress**, then publishes Chrome images for `linux/amd64` and `linux/arm64` to
+`ghcr.io/katipally/taboom` and creates a GitHub release. Fortress remains an opt-in source build.
+Prerelease tags create GitHub prereleases and do not update `latest`. Make the GHCR package public
+after its first publication so users can pull without registry authentication.
+
+The current hosted checks and release have not been run/published by the local verification
+session. See the [release gates and remaining work](docs/ROADMAP.md#release-gates).
+
+## Documentation and source map
+
+
+| Path | Purpose |
+|---|---|
+| [`docs/PLAN.md`](docs/PLAN.md) | Current architecture, lifecycle, runtime mapping and verification record |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Remaining release gates and research/operational work |
+| [`skills/SKILL.md`](skills/SKILL.md) | Agent operating playbook, packaged as an MCP resource |
+| [`skills/prompts/`](skills/prompts/) | Ten packaged MCP guides for tools and workflows |
+| [`lab/README.md`](lab/README.md) | Evaluation, reproducible extraction and research limitations |
+| [`lab/data/README.md`](lab/data/README.md) | Dataset attribution, revision, digest and fixture protocol |
+| [`.env.example`](.env.example) | Deployment configuration examples |
+| `crates/taboom-core` | Persona types/validation, admin protocol and synthetic profile fixtures |
+| `crates/taboom-humanizer` | Input planners and bundled human mouse paths |
+| `crates/taboomd` | MCP server, desktop executor, vault, routes, OCR, recordings and audit |
+| `crates/taboom-cli` | Local operator CLI |
+| `docker/` | Image, startup, Sway desktop and virtual input implementation |
+| `scripts/desktop_smoke.py` | All-tool public MCP desktop verification |
+
+Taboom's code is [AGPL-3.0-or-later](LICENSE). Derived human-data artifacts retain their source
+CC BY 4.0 attribution and license. The project is intended for personal and research agents acting
+for the person operating the desktop.

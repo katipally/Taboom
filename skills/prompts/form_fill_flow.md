@@ -1,14 +1,17 @@
 # Form Fill Flow
 
+
 How to fill out web forms with Taboom.
 
 ## Locate the form
+
 
 1. Take a screenshot and identify the form and its fields.
 2. Use `zoom` on small or dense areas to read field labels clearly.
 3. Work top-to-bottom, left-to-right, following the visual order.
 
 ## Plan and execute a continuous fill
+
 
 Use the latest full screenshot's `frame_id` to plan all predictable visible fields. Call
 `batch_actions` once with ordered `click`, `type`, and `key` steps, each including its `tool` name.
@@ -22,12 +25,14 @@ from the current state; never replay the whole fill automatically.
 
 ## Text inputs
 
+
 1. Click the field to focus it.
 2. If the field has existing text, select all (ctrl+a) and type to replace.
 3. Use the `type` tool. For secrets, use `<secret>name</secret>`.
 4. Tab to the next field or click it.
 
 ## Dropdowns / selects
+
 
 1. Click the dropdown to open it.
 2. Take a screenshot to see the options.
@@ -38,10 +43,13 @@ from the current state; never replay the whole fill automatically.
 
 ## Checkboxes and radio buttons
 
+
 1. Click the checkbox or radio button directly.
-2. Screenshot to verify the state changed (checked/unchecked).
+2. Verify the state in the batch's final screenshot for predictable toggles, or observe immediately
+   if the toggle changes layout or reveals another field.
 
 ## Date pickers
+
 
 1. If there is a text input, try typing the date directly in the expected format.
 2. If a calendar widget opens, navigate month/year first, then click the day.
@@ -49,11 +57,14 @@ from the current state; never replay the whole fill automatically.
 
 ## File uploads
 
+
 1. Locate the file input or "Choose file" button.
-2. Click it. A file dialog will open.
-3. Use the `type` tool to enter the file path in the dialog, then press Enter.
+2. Stage a local file with `files_put` if needed, and retain its returned path.
+3. Click the picker, inspect the dialog, focus its path entry and type that actual staged path.
+4. Confirm the selection and verify the visible filename before submission.
 
 ## Multi-step forms
+
 
 1. Complete each page fully before clicking Next/Continue.
 2. Screenshot after each page transition to confirm the next step loaded.
@@ -61,12 +72,16 @@ from the current state; never replay the whole fill automatically.
 
 ## Submitting
 
+
 1. Before submitting, screenshot and verify all visible field values.
-2. Click the submit button.
+2. Submit separately only when the task authorizes it. For a partial batch failure, inspect
+   `completed_actions`/`failed_step` and correct the current state without replaying completed steps.
+
 3. Wait for the response and screenshot to confirm success or read errors.
 4. If there are validation errors, read each one, fix the field, and re-submit.
 
 ## Tips
+
 
 - Let the humanizer pace keystrokes and pointer motion. Add explicit waits only when the UI needs time.
 - If a field has auto-complete suggestions, take a screenshot to check before continuing.
