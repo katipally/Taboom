@@ -102,8 +102,13 @@ def run(client, engine="chrome"):
         filled = client.tool("batch_actions", {"frame_id": frame["frame_id"], "actions": actions}, "filled.png")
         assert filled["completed_actions"] == len(actions)
         client.tools_seen.update(action["tool"] for action in actions)
-        read = client.tool("read_text")
-        assert "Seattle" in json.dumps(read)
+        client.tool("wait", {"until_settled": True})
+        for _ in range(5):
+            read = json.dumps(client.tool("read_text"))
+            if "Seattle" in read:
+                break
+            time.sleep(1)
+        assert "Seattle" in read, "Seattle not read after typing: " + read[:500]
         client.tool("key", {"combo": "ctrl+a ctrl+c"})
         assert client.tool("clipboard_get")["text"] == "Seattle"
         client.tool("clipboard_set", {"text": "fixture clipboard"})

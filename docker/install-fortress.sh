@@ -66,15 +66,15 @@ if [ ! -x /opt/fortress/chrome ]; then
     echo "Fortress v$FORTRESS_VERSION bundle did not contain executable /opt/fortress/chrome" >&2
     exit 1
 fi
-if [ ! -x /opt/fortress/tilion ]; then
-    echo "Fortress v$FORTRESS_VERSION bundle did not contain its /opt/fortress/tilion launcher" >&2
+if [ ! -x /opt/fortress/tillion ]; then
+    echo "Fortress v$FORTRESS_VERSION bundle did not contain its /opt/fortress/tillion launcher" >&2
     exit 1
 fi
 
 # Keep the upstream launcher, which supplies Fortress's bundled-font and graphics setup, while
 # letting Taboom's locale-specific fontconfig remain authoritative.
-sed -i 's|^export FONTCONFIG_FILE="$CONF"$|export FONTCONFIG_FILE="${TABOOM_FONTCONFIG_FILE:-$CONF}"|' /opt/fortress/tilion
-if ! grep -Fq 'export FONTCONFIG_FILE="${TABOOM_FONTCONFIG_FILE:-$CONF}"' /opt/fortress/tilion; then
+sed -i 's|^export FONTCONFIG_FILE="$CONF"$|export FONTCONFIG_FILE="${TABOOM_FONTCONFIG_FILE:-$CONF}"|' /opt/fortress/tillion
+if ! grep -Fq 'export FONTCONFIG_FILE="${TABOOM_FONTCONFIG_FILE:-$CONF}"' /opt/fortress/tillion; then
     echo "could not configure the Fortress launcher to preserve Taboom's fontconfig" >&2
     exit 1
 fi

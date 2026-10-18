@@ -163,7 +163,7 @@ fn numeric_flag(flag: &str, prefix: &str) -> bool {
 fn executable_for_engine(engine: Engine) -> &'static str {
     match engine {
         Engine::Chrome => "google-chrome-stable",
-        Engine::Fortress => "/opt/fortress/tilion",
+        Engine::Fortress => "/opt/fortress/tillion",
     }
 }
 
@@ -433,7 +433,7 @@ mod tests {
         assert!(validate_flags(Engine::Fortress, &["--remote-debugging-port=9222".into()]).is_err());
         assert!(validate_flags(Engine::Fortress, &["--remote-debugging-pipe".into()]).is_err());
         assert_eq!(executable_for_engine(Engine::Chrome), "google-chrome-stable");
-        assert_eq!(executable_for_engine(Engine::Fortress), "/opt/fortress/tilion");
+        assert_eq!(executable_for_engine(Engine::Fortress), "/opt/fortress/tillion");
         assert_eq!(parse_engine("fortress").unwrap(), Engine::Fortress);
         assert!(parse_engine("unknown").is_err());
     }
