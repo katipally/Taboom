@@ -82,7 +82,7 @@ jobs:
           docker compose -p taboom-ci exec -T taboom bash -c \
             'export SWAYSOCK=$(ls "$XDG_RUNTIME_DIR"/sway-ipc.*.sock | head -n1); swaymsg -t get_tree -r | grep -o "\"app_id\": *\"[^\"]*\""' || true
           docker compose -p taboom-ci exec -T taboom bash -c \
-            'tail -n 100 "$TABOOM_HOME/logs/chrome.log" || true; ps -eo pid,etime,args | grep -E "tillion|chrome" | grep -v grep || true' || true
+            'grep -v -E "GrContext|kFatalFailure|SharedImageStub|GpuChannel" "$TABOOM_HOME/logs/chrome.log" | head -n 80 || true; ps -eo pid,etime,args | grep -E "tillion|chrome" | grep -v grep || true' || true
       - name: Stop the desktop
         if: always()
         run: docker compose -p taboom-ci down

@@ -63,11 +63,12 @@ pub fn launch(home: &Path, profile: &Path, engine: Engine, flags: &[String]) -> 
         .stdout(Stdio::null())
         .stderr(Stdio::from(log));
 
-    // The tillion launcher forces ANGLE/SwiftShader Vulkan, which Chromium's Wayland backend rejects
-    // (no GBM/DRM here), so the GPU compositor never presents a first frame. Composite in software
-    // over wl_shm like Chrome does; WebGL still runs in the GPU process.
+    // The tillion launcher passes --enable-features=Vulkan, which Chromium rejects on Wayland
+    // ("--ozone-platform=wayland is not compatible with Vulkan"): Skia fails to start, every GPU
+    // channel dies and no window ever maps. --disable-features beats --enable-features, so Skia
+    // falls back to GL on ANGLE/SwiftShader. Composite in software over wl_shm like Chrome does.
     if engine == Engine::Fortress {
-        command.arg("--disable-gpu-compositing");
+        command.arg("--disable-features=Vulkan").arg("--disable-gpu-compositing");
     }
 
     // Chromium reads remote-debugging messages from fd 3 and writes responses to fd 4. Dedicated
