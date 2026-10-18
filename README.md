@@ -13,6 +13,12 @@ operate the desktop with mouse and keyboard input. Page JavaScript, DOM queries 
 CDP automation are outside this tool interface. A private browser-level pipe is used only to check
 page-host candidates for vault secret entry.
 
+##Demo
+
+
+https://github.com/user-attachments/assets/03736f1b-408b-4d32-a5aa-7ba5180fee0d
+
+
 ## Project status
 
 
