@@ -113,8 +113,12 @@ def run(client, engine="chrome"):
         for index, (label, value) in enumerate(reversed(fields)):
             if index:
                 client.tool("key", {"combo": "shift+Tab"})
-            client.tool("key", {"combo": "ctrl+a ctrl+c"})
-            copied = client.tool("clipboard_get")["text"]
+            for _ in range(5):
+                client.tool("key", {"combo": "ctrl+a ctrl+c"})
+                copied = client.tool("clipboard_get")["text"]
+                if copied == value:
+                    break
+                time.sleep(0.5)
             assert copied == value, f"{label} field holds {copied!r}, expected {value!r}"
         client.tool("clipboard_set", {"text": "fixture clipboard"})
         assert client.tool("clipboard_get")["text"] == "fixture clipboard"

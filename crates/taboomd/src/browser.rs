@@ -63,6 +63,13 @@ pub fn launch(home: &Path, profile: &Path, engine: Engine, flags: &[String]) -> 
         .stdout(Stdio::null())
         .stderr(Stdio::from(log));
 
+    // The tillion launcher forces ANGLE/SwiftShader Vulkan, which Chromium's Wayland backend rejects
+    // (no GBM/DRM here), so the GPU compositor never presents a first frame. Composite in software
+    // over wl_shm like Chrome does; WebGL still runs in the GPU process.
+    if engine == Engine::Fortress {
+        command.arg("--disable-gpu-compositing");
+    }
+
     // Chromium reads remote-debugging messages from fd 3 and writes responses to fd 4. Dedicated
     // anonymous pipes keep ordinary process stdin/stdout separate from the CDP byte stream.
     unsafe {
