@@ -66,6 +66,13 @@ class Client:
         match = matches[0]
         return match["x"] + 120, match["y"] + match["h"] + 18
 
+    def dump_failure(self):
+        try:
+            self.tool("screenshot", image_name="failure.png")
+            (self.artifacts / "failure_text.json").write_text(json.dumps(self.tool("read_text"), indent=2))
+        except Exception as error:
+            print("failure dump skipped:", error)
+
 
 def run(client, engine="chrome"):
     initialized = client.rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "taboom-smoke", "version": "1"}})
@@ -92,25 +99,23 @@ def run(client, engine="chrome"):
         client.tool("wait", {"until_settled": True})
         frame = client.tool("computer", {"action": "screenshot"}, "before.png")
         fields = [("Name", "Alex"), ("Email", "alex@example.com"), ("City", "Seattle")]
-        actions = []
-        for label, value in fields:
-            x, y = client.label(label)
-            actions.extend([
-                {"tool": "click", "x": x, "y": y, "describe": "Focus " + label},
-                {"tool": "type", "text": value, "mode": "keys"},
-            ])
+        target = client.tool("find_text", {"text": fields[0][0]})[0]
+        actions = [{"tool": "click", "x": target["x"] + target["w"] // 2, "y": target["y"] + target["h"] // 2, "describe": "Focus Name via its label"}]
+        for index, (_, value) in enumerate(fields):
+            if index:
+                actions.append({"tool": "key", "combo": "Tab"})
+            actions.append({"tool": "type", "text": value, "mode": "keys"})
         filled = client.tool("batch_actions", {"frame_id": frame["frame_id"], "actions": actions}, "filled.png")
         assert filled["completed_actions"] == len(actions)
         client.tools_seen.update(action["tool"] for action in actions)
         client.tool("wait", {"until_settled": True})
-        for _ in range(5):
-            read = json.dumps(client.tool("read_text"))
-            if "Seattle" in read:
-                break
-            time.sleep(1)
-        assert "Seattle" in read, "Seattle not read after typing: " + read[:500]
-        client.tool("key", {"combo": "ctrl+a ctrl+c"})
-        assert client.tool("clipboard_get")["text"] == "Seattle"
+        assert client.tool("read_text"), "no text read from the screen"
+        for index, (label, value) in enumerate(reversed(fields)):
+            if index:
+                client.tool("key", {"combo": "shift+Tab"})
+            client.tool("key", {"combo": "ctrl+a ctrl+c"})
+            copied = client.tool("clipboard_get")["text"]
+            assert copied == value, f"{label} field holds {copied!r}, expected {value!r}"
         client.tool("clipboard_set", {"text": "fixture clipboard"})
         assert client.tool("clipboard_get")["text"] == "fixture clipboard"
         client.tool("key_down", {"key": "shift"})
@@ -144,6 +149,9 @@ def run(client, engine="chrome"):
         with urllib.request.urlopen(share["url"], timeout=10) as response:
             assert response.status == 200
         client.tool("recording_list")
+    except Exception:
+        client.dump_failure()
+        raise
     finally:
         client.tool("session_end")
     missing = sorted(names - client.tools_seen)

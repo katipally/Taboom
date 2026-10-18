@@ -116,8 +116,12 @@ impl Drop for TracePauseGuard {
 }
 
 const BROWSER_START_TIMEOUT: Duration = Duration::from_secs(20);
-/// Chrome's Wayland app_id, whatever its --user-data-dir (read from `swaymsg -t get_tree`).
-const BROWSER_APP_ID: &str = "google-chrome";
+/// Wayland app_id of either engine, whatever its --user-data-dir (read from `swaymsg -t get_tree`).
+/// Chrome's wrapper sets CHROME_DESKTOP, giving "google-chrome"; Fortress launches the bare
+/// Chromium binary, which falls back to its default desktop name, "chromium-browser".
+fn is_browser_app_id(id: &str) -> bool {
+    matches!(id.to_ascii_lowercase().as_str(), "google-chrome" | "chromium-browser" | "chromium" | "chrome")
+}
 
 impl LocalExecutor {
     pub fn new() -> Self {
@@ -745,7 +749,7 @@ impl LocalExecutor {
         let tree: serde_json::Value = serde_json::from_slice(&out).context("parsing sway tree")?;
         let (node, fullscreen) = find_focused_with_fullscreen(&tree, false)
             .context("there is no focused window")?;
-        if node["app_id"].as_str() != Some(BROWSER_APP_ID) {
+        if !node["app_id"].as_str().is_some_and(is_browser_app_id) {
             bail!("Chrome is not the focused window");
         }
         Ok(fullscreen)
@@ -758,7 +762,7 @@ impl LocalExecutor {
         let tree_out = self.run("swaymsg", &["-t".into(), "get_tree".into(), "-r".into()])?;
         let tree: serde_json::Value = serde_json::from_slice(&tree_out).context("parsing sway tree")?;
         let focused = find_focused(&tree).context("there is no focused window")?;
-        if focused["app_id"].as_str() != Some(BROWSER_APP_ID) {
+        if !focused["app_id"].as_str().is_some_and(is_browser_app_id) {
             bail!("Chrome is not the focused window");
         }
         let window = layout_rect(&focused["rect"]).context("focused Chrome window has no usable geometry")?;
@@ -783,13 +787,13 @@ impl LocalExecutor {
     /// Brings the browser forward the way a person would: the desktop's super+b shortcut, which
     /// focuses an open window or starts Chrome.
     pub fn focus_browser(&self) -> Result<()> {
-        if self.focused_app()?.as_deref() == Some(BROWSER_APP_ID) {
+        if self.focused_app()?.as_deref().is_some_and(is_browser_app_id) {
             return Ok(());
         }
         self.key_press("super+b")?;
         let started = Instant::now();
         while started.elapsed() < BROWSER_START_TIMEOUT {
-            if self.focused_app()?.as_deref() == Some(BROWSER_APP_ID) {
+            if self.focused_app()?.as_deref().is_some_and(is_browser_app_id) {
                 std::thread::sleep(Duration::from_millis(300));
                 return Ok(());
             }
@@ -1199,6 +1203,16 @@ mod tests {
             .unwrap_err();
         assert!(error.is::<OcrTimedOut>());
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn browser_app_ids_cover_chrome_and_fortress() {
+        for id in ["google-chrome", "chromium-browser", "Chromium-browser", "chromium", "chrome"] {
+            assert!(is_browser_app_id(id), "{id}");
+        }
+        for id in ["", "foot", "google-chrome-extra", "firefox"] {
+            assert!(!is_browser_app_id(id), "{id}");
+        }
     }
 
     #[test]

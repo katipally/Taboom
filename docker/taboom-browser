@@ -24,7 +24,7 @@ exec 9>"$home/run/browser-launch.lock"
 flock -x 9 || { echo "taboom-browser: could not lock browser startup" >&2; exit 1; }
 
 if taboomd browser-check >/dev/null 2>&1; then
-    swaymsg -q '[app_id="^google-chrome"] focus' 2>/dev/null || true
+    swaymsg -q '[app_id="^(google-chrome|chromium-browser|chromium|chrome)$"] focus' 2>/dev/null || true
     flock -u 9
     exit 0
 fi

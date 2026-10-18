@@ -68,9 +68,19 @@ jobs:
           TABOOM_PERSONA=fortress-ci docker compose -p taboom-ci up -d --no-build --pull never --wait --wait-timeout 180
       - name: Exercise MCP and the desktop
         run: python scripts/desktop_smoke.py --engine "${{ matrix.engine }}" --artifacts /tmp/taboom-smoke
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: taboom-smoke-${{ matrix.engine }}
+          path: /tmp/taboom-smoke
+          if-no-files-found: ignore
       - name: Print desktop logs on failure
         if: failure()
-        run: docker compose -p taboom-ci logs --tail 200
+        run: |
+          docker compose -p taboom-ci logs --tail 200
+          docker compose -p taboom-ci exec -T taboom bash -c \
+            'export SWAYSOCK=$(ls "$XDG_RUNTIME_DIR"/sway-ipc.*.sock | head -n1); swaymsg -t get_tree -r | grep -o "\"app_id\": *\"[^\"]*\""' || true
       - name: Stop the desktop
         if: always()
         run: docker compose -p taboom-ci down
